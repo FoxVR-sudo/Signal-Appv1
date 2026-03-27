@@ -1,0 +1,13 @@
+{
+  "name": "signal-app-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.5.0",
+  "scripts": {
+    "dev:backend": "corepack pnpm --filter @signal/backend dev",
+    "dev:citizen": "corepack pnpm --filter @signal/citizen-mobile start",
+    "dev:patrol": "corepack pnpm --filter @signal/patrol-mobile start",
+    "build": "corepack pnpm -r build",
+    "lint": "corepack pnpm -r lint"
+  }
+}
