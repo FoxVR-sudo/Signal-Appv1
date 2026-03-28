@@ -51,14 +51,14 @@ jobs:
         run: |
           if [ "${{ inputs.app }}" = "citizen" ]; then
             APP_DIR="apps/citizen-mobile"
-            PROJECT_ID="${{ secrets.EAS_PROJECT_ID_CITIZEN }}"
           else
             APP_DIR="apps/patrol-mobile"
-            PROJECT_ID="${{ secrets.EAS_PROJECT_ID_PATROL }}"
           fi
 
+          PROJECT_ID=$(node -e "const app=require('./${APP_DIR}/app.json'); process.stdout.write(app?.expo?.extra?.eas?.projectId || '')")
+
           if [ -z "$PROJECT_ID" ]; then
-            echo "::error::Missing EAS project id secret. Set EAS_PROJECT_ID_CITIZEN and EAS_PROJECT_ID_PATROL in repo secrets."
+            echo "::error::Missing expo.extra.eas.projectId in ${APP_DIR}/app.json"
             exit 1
           fi
 
