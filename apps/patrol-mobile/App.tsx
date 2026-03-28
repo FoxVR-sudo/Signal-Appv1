@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { FlatList, Image, Platform, SafeAreaView, StyleSheet, Text, View } from "react-native";
+import { FlatList, Image, Platform, SafeAreaView, StyleSheet, Text, Vibration, View } from "react-native";
 
 type ReportRecord = {
   id: string;
@@ -22,6 +22,7 @@ const UNIT_ID = process.env.EXPO_PUBLIC_PATROL_UNIT_ID ?? "patrol-1";
 export default function App() {
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [isConnected, setIsConnected] = useState(false);
+  const [dispatchNotice, setDispatchNotice] = useState<string | null>(null);
 
   const websocketUrl = useMemo(() => {
     if (API_BASE.startsWith("https://")) {
@@ -56,31 +57,50 @@ export default function App() {
     ws.onerror = () => setIsConnected(false);
     ws.onmessage = (event) => {
       try {
-        const payload = JSON.parse(event.data as string) as {
-          type: string;
-          data: ReportRecord;
-        };
+        const payload = JSON.parse(event.data as string) as { type: string; data: unknown };
 
         if (payload.type === "report_created") {
-          if (!payload.data.assignedUnitId || payload.data.assignedUnitId === UNIT_ID) {
-            setReports((prev) => [payload.data, ...prev]);
+          const report = payload.data as ReportRecord;
+          if (!report) return;
+
+          if (!report.assignedUnitId || report.assignedUnitId === UNIT_ID) {
+            setReports((prev) => [report, ...prev]);
+            setDispatchNotice(`Нов сигнал: ${report.id.slice(0, 8)}`);
+            Vibration.vibrate([120, 80, 120]);
+          }
+        }
+
+        if (payload.type === "report_assigned" || payload.type === "report_reassigned") {
+          const data = payload.data as { reportId: string; unitId: string; unitLabel?: string };
+          if (data?.unitId === UNIT_ID) {
+            setDispatchNotice(`Разпределен сигнал: ${data.reportId.slice(0, 8)}`);
+            Vibration.vibrate([180, 80, 180, 80, 180]);
           }
         }
 
         if (payload.type === "report_updated") {
+          const report = payload.data as ReportRecord;
+          if (!report) return;
+
           setReports((prev) => {
-            const existingIndex = prev.findIndex((item) => item.id === payload.data.id);
-            const belongsToUnit = !payload.data.assignedUnitId || payload.data.assignedUnitId === UNIT_ID;
+            const existingIndex = prev.findIndex((item) => item.id === report.id);
+            const belongsToUnit = !report.assignedUnitId || report.assignedUnitId === UNIT_ID;
+            const isNewForThisUnit = existingIndex < 0 && belongsToUnit;
+
+            if (isNewForThisUnit && report.status === "assigned") {
+              setDispatchNotice(`Сигнал към теб: ${report.id.slice(0, 8)}`);
+              Vibration.vibrate([150, 60, 150]);
+            }
 
             if (existingIndex >= 0) {
               if (!belongsToUnit) {
-                return prev.filter((item) => item.id !== payload.data.id);
+                return prev.filter((item) => item.id !== report.id);
               }
-              return prev.map((item) => (item.id === payload.data.id ? payload.data : item));
+              return prev.map((item) => (item.id === report.id ? report : item));
             }
 
             if (belongsToUnit) {
-              return [payload.data, ...prev];
+              return [report, ...prev];
             }
 
             return prev;
@@ -123,6 +143,7 @@ export default function App() {
         <Text style={styles.subtitle}>
           Статус: {isConnected ? "Свързано в реално време" : "Изчаква връзка"}
         </Text>
+        {dispatchNotice ? <Text style={styles.notice}>{dispatchNotice}</Text> : null}
       </View>
 
       <FlatList
@@ -166,6 +187,17 @@ const styles = StyleSheet.create({
   header: { padding: 20, gap: 8 },
   title: { fontSize: 24, fontWeight: "800" },
   subtitle: { fontSize: 15, color: "#425466" },
+  notice: {
+    marginTop: 6,
+    backgroundColor: "#fff3bf",
+    borderColor: "#f59f00",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    color: "#7c2d12",
+    fontWeight: "700"
+  },
   list: { paddingHorizontal: 16, paddingBottom: 24, gap: 12 },
   card: {
     backgroundColor: "#fff",

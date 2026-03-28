@@ -26,6 +26,40 @@ export default function App() {
   const [lastReportId, setLastReportId] = useState<string | null>(null);
   const [lastReportStatus, setLastReportStatus] = useState<string | null>(null);
 
+  const getLocationWithFallback = async () => {
+    const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number) => {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => setTimeout(() => reject(new Error("location timeout")), timeoutMs))
+      ]);
+    };
+
+    try {
+      return await withTimeout(
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest }),
+        7000
+      );
+    } catch {
+      // Continue to lower-power fallbacks.
+    }
+
+    try {
+      return await withTimeout(
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+        5000
+      );
+    } catch {
+      // Continue to last known fallback.
+    }
+
+    const lastKnown = await Location.getLastKnownPositionAsync({ maxAge: 120000, requiredAccuracy: 250 });
+    if (lastKnown) {
+      return lastKnown;
+    }
+
+    throw new Error("Неуспешно определяне на местоположение.");
+  };
+
   const openCamera = async () => {
     if (phone.trim().length < 8) {
       Alert.alert("Липсва телефон", "Въведи валиден телефонен номер.");
@@ -44,6 +78,15 @@ export default function App() {
     if (!locationPermission.granted) {
       Alert.alert("Няма локация", "Разреши GPS достъп, за да подадеш сигнал.");
       return;
+    }
+
+    if (Platform.OS === "android") {
+      try {
+        // Improves precision indoors by allowing Wi-Fi/cellular assisted positioning.
+        await Location.enableNetworkProviderAsync();
+      } catch {
+        // User may decline; app can continue with available providers.
+      }
     }
 
     setIsCameraOpen(true);
@@ -65,12 +108,15 @@ export default function App() {
         throw new Error("Снимката не беше заснета успешно.");
       }
 
-      const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced
-      });
+      const location = await getLocationWithFallback();
 
-      if ((location.coords.accuracy ?? 999) > 50) {
-        throw new Error("GPS точността е слаба. Моля, опитай отново.");
+      const accuracy = location.coords.accuracy ?? 250;
+      if (accuracy > 250) {
+        throw new Error("Сигналът за местоположение е твърде слаб. Включи Wi-Fi/интернет и опитай отново.");
+      }
+
+      if (accuracy > 120) {
+        Alert.alert("Слаб GPS", "Локацията е приблизителна, но сигналът ще бъде изпратен.");
       }
 
       const response = await fetch(`${BACKEND_URL}/reports`, {
@@ -81,7 +127,7 @@ export default function App() {
           photoBase64: picture.base64,
           lat: location.coords.latitude,
           lng: location.coords.longitude,
-          gpsAccuracyM: location.coords.accuracy ?? 0,
+          gpsAccuracyM: accuracy,
           capturedAtDevice: new Date().toISOString()
         })
       });

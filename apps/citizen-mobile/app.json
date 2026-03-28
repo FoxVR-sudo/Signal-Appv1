@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "Signal Citizen",
+    "slug": "signal-citizen",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "platforms": ["android"],
+    "android": {
+      "package": "bg.signal.citizen",
+      "permissions": ["CAMERA", "ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"]
+    },
+    "plugins": [
+      "expo-camera",
+      "expo-location"
+    ]
+  }
+}

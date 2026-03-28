@@ -7,7 +7,20 @@
     "dev:backend": "corepack pnpm --filter @signal/backend dev",
     "dev:citizen": "corepack pnpm --filter @signal/citizen-mobile start",
     "dev:patrol": "corepack pnpm --filter @signal/patrol-mobile start",
+    "dev:citizen:port": "corepack pnpm --filter @signal/citizen-mobile start -- --port 8081",
+    "dev:patrol:port": "corepack pnpm --filter @signal/patrol-mobile start -- --port 8085",
+    "android:prebuild:citizen": "CI=1 corepack pnpm --filter @signal/citizen-mobile exec expo prebuild --platform android --clean",
+    "android:prebuild:patrol": "CI=1 corepack pnpm --filter @signal/patrol-mobile exec expo prebuild --platform android --clean",
+    "android:apk:citizen": "CI=1 corepack pnpm --filter @signal/citizen-mobile exec expo prebuild --platform android --clean && node scripts/patch-android-build.js apps/citizen-mobile && cd apps/citizen-mobile/android && NODE_ENV=development ./gradlew assembleDebug && cd ../../.. && cp apps/citizen-mobile/android/app/build/outputs/apk/debug/app-debug.apk apps/citizen-mobile/android/app/build/outputs/apk/debug/signal-citizen-debug.apk",
+    "android:apk:patrol": "CI=1 corepack pnpm --filter @signal/patrol-mobile exec expo prebuild --platform android --clean && node scripts/patch-android-build.js apps/patrol-mobile && cd apps/patrol-mobile/android && NODE_ENV=development ./gradlew assembleDebug && cd ../../.. && cp apps/patrol-mobile/android/app/build/outputs/apk/debug/app-debug.apk apps/patrol-mobile/android/app/build/outputs/apk/debug/signal-patrol-debug.apk",
+    "android:release:citizen": "CI=1 corepack pnpm --filter @signal/citizen-mobile exec expo prebuild --platform android --clean && node scripts/patch-android-build.js apps/citizen-mobile && cd apps/citizen-mobile/android && NODE_ENV=production ./gradlew assembleRelease && cd ../../.. && cp apps/citizen-mobile/android/app/build/outputs/apk/release/app-release.apk apps/citizen-mobile/android/app/build/outputs/apk/release/signal-citizen-release.apk",
+    "android:release:patrol": "CI=1 corepack pnpm --filter @signal/patrol-mobile exec expo prebuild --platform android --clean && node scripts/patch-android-build.js apps/patrol-mobile && cd apps/patrol-mobile/android && NODE_ENV=production ./gradlew assembleRelease && cd ../../.. && cp apps/patrol-mobile/android/app/build/outputs/apk/release/app-release.apk apps/patrol-mobile/android/app/build/outputs/apk/release/signal-patrol-release.apk",
     "build": "corepack pnpm -r build",
     "lint": "corepack pnpm -r lint"
+  },
+  "pnpm": {
+    "overrides": {
+      "typescript": "~5.9.3"
+    }
   }
 }
