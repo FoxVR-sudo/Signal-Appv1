@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: signal-backend
+    runtime: node
+    plan: free
+    rootDir: .
+    buildCommand: corepack enable && corepack pnpm install --frozen-lockfile && corepack pnpm --filter @signal/backend build
+    startCommand: corepack pnpm --filter @signal/backend start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20.20.0
+      - key: NODE_ENV
+        value: production

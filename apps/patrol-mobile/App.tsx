@@ -16,7 +16,7 @@ type ReportRecord = {
 
 const API_BASE =
   process.env.EXPO_PUBLIC_BACKEND_URL ??
-  (Platform.OS === "android" ? "http://10.0.2.2:4000" : "http://127.0.0.1:4000");
+  "http://127.0.0.1:4000";
 const UNIT_ID = process.env.EXPO_PUBLIC_PATROL_UNIT_ID ?? "patrol-1";
 
 export default function App() {

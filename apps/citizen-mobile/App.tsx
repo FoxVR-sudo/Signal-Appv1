@@ -15,7 +15,7 @@ import {
 
 const BACKEND_URL =
   process.env.EXPO_PUBLIC_BACKEND_URL ??
-  (Platform.OS === "android" ? "http://10.0.2.2:4000" : "http://127.0.0.1:4000");
+  "http://127.0.0.1:4000";
 
 export default function App() {
   const cameraRef = useRef<CameraView | null>(null);
