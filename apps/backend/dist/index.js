@@ -110,7 +110,7 @@ app.post("/reports", async (request, reply) => {
         photoBase64: z.string().min(100).max(8_000_000).optional(),
         lat: z.number(),
         lng: z.number(),
-        gpsAccuracyM: z.number().max(50),
+        gpsAccuracyM: z.number().max(250),
         capturedAtDevice: z.string().datetime()
     })
         .refine((payload) => Boolean(payload.photoUrl || payload.photoBase64), {

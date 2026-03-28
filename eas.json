@@ -5,15 +5,21 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "node": "20.20.0",
+      "pnpm": "10.5.0"
     },
     "preview": {
       "distribution": "internal",
+      "node": "20.20.0",
+      "pnpm": "10.5.0",
       "android": {
         "buildType": "apk"
       }
     },
     "production": {
+      "node": "20.20.0",
+      "pnpm": "10.5.0",
       "android": {
         "buildType": "app-bundle"
       }
