@@ -4,14 +4,30 @@
     "slug": "signal-citizen",
     "version": "1.0.0",
     "orientation": "portrait",
-    "platforms": ["android"],
+    "platforms": [
+      "android"
+    ],
     "android": {
       "package": "bg.signal.citizen",
-      "permissions": ["CAMERA", "ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"]
+      "permissions": [
+        "CAMERA",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
     },
     "plugins": [
       "expo-camera",
       "expo-location"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "5f541f08-0f9c-4e20-9bd1-bfea8810c1de"
+      }
+    },
+    "owner": "foxvrs-organization"
   }
 }
