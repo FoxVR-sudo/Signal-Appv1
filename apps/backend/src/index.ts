@@ -45,7 +45,7 @@ const patrolUnits: PatrolUnit[] = [
 
 const clients = new Set<import("ws").WebSocket>();
 const reassignmentTimers = new Map<string, NodeJS.Timeout>();
-const ASSIGNMENT_TIMEOUT_MS = 15_000;
+const ASSIGNMENT_TIMEOUT_MS = 120_000;
 
 const toRadians = (value: number) => (value * Math.PI) / 180;
 

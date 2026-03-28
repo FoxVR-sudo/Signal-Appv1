@@ -1,30 +1,84 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Location from "expo-location";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  PermissionsAndroid,
   Platform,
   Pressable,
   SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View
 } from "react-native";
+import DeviceInfo from "react-native-device-info";
 
 const BACKEND_URL =
   process.env.EXPO_PUBLIC_BACKEND_URL ??
-  "http://127.0.0.1:4000";
+  "https://signal-backend-8pyp.onrender.com";
+const SAVED_PHONE_KEY = "@signal/citizen-phone";
+const HISTORY_KEY = "@signal/citizen-history";
+
+type HistoryEntry = { id: string; submittedAt: string; status: string };
 
 export default function App() {
   const cameraRef = useRef<CameraView | null>(null);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-  const [phone, setPhone] = useState("0888123456");
+  const [phone, setPhone] = useState("");
+  const [isPhoneLoaded, setIsPhoneLoaded] = useState(false);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [lastReportId, setLastReportId] = useState<string | null>(null);
   const [lastReportStatus, setLastReportStatus] = useState<string | null>(null);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+
+  useEffect(() => {
+    const loadSavedPhone = async () => {
+      try {
+        // 1. Try AsyncStorage first (previously confirmed number)
+        const savedPhone = await AsyncStorage.getItem(SAVED_PHONE_KEY);
+        if (savedPhone?.trim()) {
+          setPhone(savedPhone.trim());
+          return;
+        }
+
+        // 2. Try to read the SIM phone number from the device
+        if (Platform.OS === "android") {
+          try {
+            const granted = await PermissionsAndroid.request(
+              PermissionsAndroid.PERMISSIONS.READ_PHONE_NUMBERS
+            );
+            if (granted === PermissionsAndroid.RESULTS.GRANTED) {
+              const devicePhone = await DeviceInfo.getPhoneNumber();
+              if (devicePhone && devicePhone !== "unknown" && devicePhone.length >= 8) {
+                setPhone(devicePhone);
+              }
+            }
+          } catch {
+            // Device doesn't expose SIM number; leave field empty.
+          }
+        }
+      } finally {
+        setIsPhoneLoaded(true);
+      }
+    };
+
+    const loadHistory = async () => {
+      try {
+        const raw = await AsyncStorage.getItem(HISTORY_KEY);
+        if (raw) setHistory(JSON.parse(raw) as HistoryEntry[]);
+      } catch {
+        // Ignore corrupted history.
+      }
+    };
+
+    void loadSavedPhone();
+    void loadHistory();
+  }, []);
 
   const getLocationWithFallback = async () => {
     const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number) => {
@@ -137,9 +191,20 @@ export default function App() {
       }
 
       const payload = (await response.json()) as { id: string };
+      await AsyncStorage.setItem(SAVED_PHONE_KEY, phone.trim());
+
+      const newEntry: HistoryEntry = {
+        id: payload.id,
+        submittedAt: new Date().toISOString(),
+        status: "submitted"
+      };
+      const updatedHistory = [newEntry, ...history].slice(0, 10);
+      setHistory(updatedHistory);
+      await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
+
       setLastReportId(payload.id);
-      setLastReportStatus("assigned");
-      Alert.alert("Сигналът е изпратен", `Номер: ${payload.id}`);
+      setLastReportStatus("submitted");
+      Alert.alert("Сигналът е изпратен", `Номер: ${payload.id.slice(0, 8)}`);
       setIsCameraOpen(false);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Възникна неочаквана грешка.";
@@ -163,6 +228,14 @@ export default function App() {
 
         const payload = (await response.json()) as { status: string };
         setLastReportStatus(payload.status);
+
+        setHistory((prev) => {
+          const updated = prev.map((e) =>
+            e.id === lastReportId ? { ...e, status: payload.status } : e
+          );
+          AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(updated)).catch(() => {});
+          return updated;
+        });
       } catch {
         // Skip transient network errors.
       }
@@ -198,7 +271,7 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.root}>
-      <View style={styles.center}>
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Signal Citizen</Text>
 
         <TextInput
@@ -206,7 +279,10 @@ export default function App() {
           onChangeText={setPhone}
           keyboardType="phone-pad"
           placeholder="Телефонен номер"
+          autoComplete="tel"
+          textContentType="telephoneNumber"
           style={styles.input}
+          editable={isPhoneLoaded}
         />
 
         <Pressable style={styles.button} onPress={openCamera}>
@@ -216,17 +292,57 @@ export default function App() {
         {lastReportId ? (
           <View style={styles.statusBox}>
             <Text style={styles.statusTitle}>Последен сигнал: {lastReportId.slice(0, 8)}</Text>
-            <Text style={styles.statusText}>Статус: {lastReportStatus ?? "изчакване"}</Text>
+            <Text style={styles.statusText}>Статус: {translateStatus(lastReportStatus ?? "")}</Text>
           </View>
         ) : null}
-      </View>
+
+        {history.length > 0 ? (
+          <View style={styles.historySection}>
+            <Text style={styles.historyTitle}>История на сигналите</Text>
+            {history.map((entry) => (
+              <View key={entry.id} style={styles.historyRow}>
+                <View style={styles.historyLeft}>
+                  <Text style={styles.historyId}>{entry.id.slice(0, 8)}</Text>
+                  <Text style={styles.historyDate}>
+                    {new Date(entry.submittedAt).toLocaleString("bg-BG", {
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit"
+                    })}
+                  </Text>
+                </View>
+                <Text
+                  style={[
+                    styles.historyStatus,
+                    entry.status === "closed" && styles.historyStatusClosed
+                  ]}
+                >
+                  {translateStatus(entry.status)}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
+const translateStatus = (status: string) => {
+  switch (status) {
+    case "submitted": return "Подаден";
+    case "assigned": return "Разпределен към патрул";
+    case "accepted": return "Приет от патрул";
+    case "on_site": return "Патрулът е на място";
+    case "closed": return "Приключен";
+    default: return status || "изчакване";
+  }
+};
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#f5f6f8" },
-  center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
+  scroll: { flexGrow: 1, alignItems: "center", paddingTop: 48, paddingBottom: 32, paddingHorizontal: 24 },
   title: { fontSize: 28, fontWeight: "800", marginBottom: 20 },
   input: {
     width: "100%",
@@ -306,5 +422,33 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     fontWeight: "700"
-  }
+  },
+  historySection: {
+    width: "100%",
+    maxWidth: 320,
+    marginTop: 24
+  },
+  historyTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    marginBottom: 10,
+    color: "#1e293b"
+  },
+  historyRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "#e2e8f0"
+  },
+  historyLeft: { gap: 2 },
+  historyId: { fontSize: 14, fontWeight: "700", color: "#0b3d91" },
+  historyDate: { fontSize: 12, color: "#64748b" },
+  historyStatus: { fontSize: 13, fontWeight: "600", color: "#0b3d91" },
+  historyStatusClosed: { color: "#64748b" }
 });

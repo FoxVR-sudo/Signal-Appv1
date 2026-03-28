@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { FlatList, Image, Platform, SafeAreaView, StyleSheet, Text, Vibration, View } from "react-native";
+import {
+  Alert,
+  FlatList,
+  Image,
+  Pressable,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  Vibration,
+  View
+} from "react-native";
 
 type ReportRecord = {
   id: string;
@@ -16,13 +26,14 @@ type ReportRecord = {
 
 const API_BASE =
   process.env.EXPO_PUBLIC_BACKEND_URL ??
-  "http://127.0.0.1:4000";
+  "https://signal-backend-8pyp.onrender.com";
 const UNIT_ID = process.env.EXPO_PUBLIC_PATROL_UNIT_ID ?? "patrol-1";
 
 export default function App() {
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [dispatchNotice, setDispatchNotice] = useState<string | null>(null);
+  const [pendingActionReportId, setPendingActionReportId] = useState<string | null>(null);
 
   const websocketUrl = useMemo(() => {
     if (API_BASE.startsWith("https://")) {
@@ -50,14 +61,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const ws = new WebSocket(websocketUrl);
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let unmounted = false;
 
-    ws.onopen = () => setIsConnected(true);
-    ws.onclose = () => setIsConnected(false);
-    ws.onerror = () => setIsConnected(false);
-    ws.onmessage = (event) => {
+    const handleMessage = (event: MessageEvent<string>) => {
       try {
-        const payload = JSON.parse(event.data as string) as { type: string; data: unknown };
+        const payload = JSON.parse(event.data) as { type: string; data: unknown };
 
         if (payload.type === "report_created") {
           const report = payload.data as ReportRecord;
@@ -111,30 +121,126 @@ export default function App() {
       }
     };
 
-    return () => ws.close();
+    const connect = () => {
+      if (unmounted) return;
+      ws = new WebSocket(websocketUrl);
+
+      ws.onopen = () => {
+        if (!unmounted) {
+          setIsConnected(true);
+          void refreshReports();
+        }
+      };
+
+      ws.onclose = () => {
+        if (!unmounted) {
+          setIsConnected(false);
+          reconnectTimer = setTimeout(connect, 5000);
+        }
+      };
+
+      ws.onerror = () => {
+        if (!unmounted) setIsConnected(false);
+      };
+
+      ws.onmessage = handleMessage;
+    };
+
+    connect();
+
+    return () => {
+      unmounted = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      ws?.close();
+    };
   }, [websocketUrl]);
 
+  useEffect(() => {
+    const refreshTimer = setInterval(() => {
+      void refreshReports();
+    }, 30_000);
+    return () => clearInterval(refreshTimer);
+  }, []);
+
   const updateStatus = async (reportId: string, action: "accept" | "arrived" | "close") => {
-    const endpoint =
-      action === "accept"
-        ? "accept"
-        : action === "arrived"
-          ? "arrived"
-          : "close";
+    setPendingActionReportId(reportId);
+    try {
+      const endpoint =
+        action === "accept"
+          ? "accept"
+          : action === "arrived"
+            ? "arrived"
+            : "close";
 
-    const response = await fetch(`${API_BASE}/patrol/incidents/${reportId}/${endpoint}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ unitId: UNIT_ID })
-    });
+      const response = await fetch(`${API_BASE}/patrol/incidents/${reportId}/${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ unitId: UNIT_ID })
+      });
 
-    if (!response.ok) {
-      return;
+      if (!response.ok) {
+        let errorMessage = "Операцията не беше приета от сървъра.";
+
+        try {
+          const payload = (await response.json()) as { error?: string };
+          if (payload?.error) {
+            errorMessage = payload.error;
+          }
+        } catch {
+          // Ignore malformed error payloads.
+        }
+
+        Alert.alert("Неуспешно действие", errorMessage);
+        return;
+      }
+
+      const payload = (await response.json()) as { report: ReportRecord };
+      setReports((prev) => prev.map((item) => (item.id === reportId ? payload.report : item)));
+      setDispatchNotice(
+        action === "accept"
+          ? `Сигналът е приет: ${reportId.slice(0, 8)}`
+          : action === "arrived"
+            ? `Маркиран на място: ${reportId.slice(0, 8)}`
+            : `Сигналът е приключен: ${reportId.slice(0, 8)}`
+      );
+    } finally {
+      setPendingActionReportId(null);
+    }
+  };
+
+  const getAvailableActions = (report: ReportRecord) => {
+    if (report.status === "assigned") {
+      return [{ key: "accept", label: "Приемам" }] as const;
     }
 
-    const payload = (await response.json()) as { report: ReportRecord };
-    setReports((prev) => prev.map((item) => (item.id === reportId ? payload.report : item)));
+    if (report.status === "accepted") {
+      return [{ key: "arrived", label: "На място" }] as const;
+    }
+
+    if (report.status === "on_site") {
+      return [{ key: "close", label: "Приключи" }] as const;
+    }
+
+    return [] as const;
   };
+
+  const refreshReports = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/patrol/incidents/live?unitId=${UNIT_ID}`);
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = (await response.json()) as ReportRecord[];
+      setReports(payload);
+    } catch {
+      // Ignore transient refresh errors.
+    }
+  };
+
+  useEffect(() => {
+    void refreshReports();
+  }, [dispatchNotice]);
 
   return (
     <SafeAreaView style={styles.root}>
@@ -164,15 +270,20 @@ export default function App() {
               Получен: {new Date(item.receivedAtServer).toLocaleString()}
             </Text>
             <View style={styles.actions}>
-              <Text style={styles.action} onPress={() => void updateStatus(item.id, "accept")}>
-                Приемам
-              </Text>
-              <Text style={styles.action} onPress={() => void updateStatus(item.id, "arrived")}>
-                На място
-              </Text>
-              <Text style={styles.action} onPress={() => void updateStatus(item.id, "close")}>
-                Приключи
-              </Text>
+              {getAvailableActions(item).length ? (
+                getAvailableActions(item).map((action) => (
+                  <Pressable
+                    key={action.key}
+                    style={[styles.actionButton, pendingActionReportId === item.id && styles.actionButtonDisabled]}
+                    disabled={pendingActionReportId === item.id}
+                    onPress={() => void updateStatus(item.id, action.key)}
+                  >
+                    <Text style={styles.actionButtonText}>{action.label}</Text>
+                  </Pressable>
+                ))
+              ) : (
+                <Text style={styles.actionMuted}>Няма следващо действие</Text>
+              )}
             </View>
           </View>
         )}
@@ -218,11 +329,25 @@ const styles = StyleSheet.create({
   actions: {
     marginTop: 10,
     flexDirection: "row",
-    justifyContent: "space-between"
+    gap: 10,
+    flexWrap: "wrap"
   },
-  action: {
-    color: "#0b3d91",
+  actionButton: {
+    backgroundColor: "#0b3d91",
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10
+  },
+  actionButtonDisabled: {
+    opacity: 0.7
+  },
+  actionButtonText: {
+    color: "#fff",
     fontWeight: "700"
+  },
+  actionMuted: {
+    color: "#64748b",
+    fontWeight: "600"
   },
   empty: {
     textAlign: "center",
