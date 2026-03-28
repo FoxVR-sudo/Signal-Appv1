@@ -46,6 +46,25 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Link EAS project in CI
+        shell: bash
+        run: |
+          if [ "${{ inputs.app }}" = "citizen" ]; then
+            APP_DIR="apps/citizen-mobile"
+            PROJECT_ID="${{ secrets.EAS_PROJECT_ID_CITIZEN }}"
+          else
+            APP_DIR="apps/patrol-mobile"
+            PROJECT_ID="${{ secrets.EAS_PROJECT_ID_PATROL }}"
+          fi
+
+          if [ -z "$PROJECT_ID" ]; then
+            echo "::error::Missing EAS project id secret. Set EAS_PROJECT_ID_CITIZEN and EAS_PROJECT_ID_PATROL in repo secrets."
+            exit 1
+          fi
+
+          cd "$APP_DIR"
+          eas init --id "$PROJECT_ID" --force --non-interactive
+
       - name: Build selected app
         shell: bash
         run: |
