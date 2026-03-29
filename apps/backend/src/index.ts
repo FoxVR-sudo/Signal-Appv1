@@ -27,8 +27,11 @@ type ReportRecord = {
 type PatrolUnit = {
   id: string;
   label: string;
+  deviceId: string;
+  platform: "android" | "ios";
   lat: number;
   lng: number;
+  lastSeenAt: string;
   isAvailable: boolean;
   activeReportId: string | null;
 };
@@ -42,11 +45,7 @@ await app.register(cors, { origin: true });
 await app.register(websocket);
 
 const reports: ReportRecord[] = [];
-
-const patrolUnits: PatrolUnit[] = [
-  { id: "patrol-1", label: "Патрул 1", lat: 42.6977, lng: 23.3219, isAvailable: true, activeReportId: null },
-  { id: "patrol-2", label: "Патрул 2", lat: 42.6900, lng: 23.3300, isAvailable: true, activeReportId: null }
-];
+const patrolUnits: PatrolUnit[] = [];
 
 const clients = new Set<import("ws").WebSocket>();
 const reassignmentTimers = new Map<string, NodeJS.Timeout>();
@@ -57,6 +56,8 @@ const PUSH_TOKEN_STORE_DIR = path.join(process.cwd(), ".data");
 const PUSH_TOKEN_STORE_PATH = path.join(PUSH_TOKEN_STORE_DIR, "patrol-push-tokens.json");
 const REPORT_STORE_DIR = path.join(process.cwd(), ".data");
 const REPORT_STORE_PATH = path.join(REPORT_STORE_DIR, "reports.json");
+const PATROL_UNIT_STORE_PATH = path.join(process.cwd(), ".data", "patrol-units.json");
+const PATROL_ACTIVE_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 const toRadians = (value: number) => (value * Math.PI) / 180;
 
@@ -111,9 +112,88 @@ const persistPatrolPushTokens = async () => {
   }
 };
 
+const persistPatrolUnits = async () => {
+  try {
+    await fs.mkdir(path.dirname(PATROL_UNIT_STORE_PATH), { recursive: true });
+    await fs.writeFile(PATROL_UNIT_STORE_PATH, JSON.stringify(patrolUnits), "utf-8");
+  } catch (error) {
+    app.log.warn({ error }, "Failed to persist patrol units store");
+  }
+};
+
+const loadPatrolUnits = async () => {
+  try {
+    const raw = await fs.readFile(PATROL_UNIT_STORE_PATH, "utf-8");
+    const parsed = JSON.parse(raw) as PatrolUnit[];
+    if (!Array.isArray(parsed)) {
+      return;
+    }
+
+    patrolUnits.splice(0, patrolUnits.length, ...parsed);
+    app.log.info({ count: patrolUnits.length }, "Loaded patrol units store");
+  } catch {
+    app.log.info("No persisted patrol units store found");
+  }
+};
+
+const getNextPatrolNumber = () => {
+  const max = patrolUnits.reduce((acc, unit) => {
+    const match = /^patrol-(\d+)$/.exec(unit.id);
+    if (!match) return acc;
+    const value = Number(match[1]);
+    return Number.isFinite(value) ? Math.max(acc, value) : acc;
+  }, 0);
+
+  return max + 1;
+};
+
+const getPatrolUnitById = (unitId: string) => patrolUnits.find((unit) => unit.id === unitId);
+
+const upsertPatrolUnit = (input: {
+  deviceId: string;
+  platform: "android" | "ios";
+  lat: number;
+  lng: number;
+}) => {
+  const existing = patrolUnits.find((unit) => unit.deviceId === input.deviceId);
+  const nowIso = new Date().toISOString();
+
+  if (existing) {
+    existing.platform = input.platform;
+    existing.lat = input.lat;
+    existing.lng = input.lng;
+    existing.lastSeenAt = nowIso;
+    return existing;
+  }
+
+  const number = getNextPatrolNumber();
+  const created: PatrolUnit = {
+    id: `patrol-${number}`,
+    label: `Патрул ${number}`,
+    deviceId: input.deviceId,
+    platform: input.platform,
+    lat: input.lat,
+    lng: input.lng,
+    lastSeenAt: nowIso,
+    isAvailable: true,
+    activeReportId: null
+  };
+  patrolUnits.push(created);
+  return created;
+};
+
 const isUnitReachable = (unitId: string) => {
   const tokens = patrolPushTokens.get(unitId);
   return Boolean(tokens && tokens.size > 0);
+};
+
+const isUnitActiveRecently = (unit: PatrolUnit) => {
+  const seenAt = new Date(unit.lastSeenAt).getTime();
+  return Number.isFinite(seenAt) && Date.now() - seenAt <= PATROL_ACTIVE_WINDOW_MS;
+};
+
+const isUnitAssignable = (unit: PatrolUnit) => {
+  return unit.isAvailable && isUnitReachable(unit.id) && isUnitActiveRecently(unit);
 };
 
 const loadReports = async () => {
@@ -137,7 +217,7 @@ const loadReports = async () => {
       if (
         report.assignedUnitId &&
         report.status !== "closed" &&
-        !isUnitReachable(report.assignedUnitId)
+        (!isUnitReachable(report.assignedUnitId) || !getPatrolUnitById(report.assignedUnitId))
       ) {
         report.assignedUnitId = null;
         report.status = "submitted";
@@ -249,6 +329,7 @@ const scheduleReassignment = (reportId: string) => {
     if (currentUnit) {
       currentUnit.isAvailable = true;
       currentUnit.activeReportId = null;
+      void persistPatrolUnits();
     }
 
     const reassignedUnit = assignNearestPatrol(report);
@@ -287,12 +368,7 @@ const scheduleReassignment = (reportId: string) => {
 
 const assignNearestPatrol = (report: ReportRecord) => {
   const candidate = patrolUnits
-    .filter(
-      (unit) =>
-        unit.isAvailable &&
-        !report.assignmentAttempts.includes(unit.id) &&
-        isUnitReachable(unit.id)
-    )
+    .filter((unit) => !report.assignmentAttempts.includes(unit.id) && isUnitAssignable(unit))
     .map((unit) => ({
       unit,
       distance: haversineMeters(report.lat, report.lng, unit.lat, unit.lng)
@@ -308,11 +384,71 @@ const assignNearestPatrol = (report: ReportRecord) => {
   report.assignedUnitId = candidate.unit.id;
   report.status = "assigned";
   report.assignmentAttempts.push(candidate.unit.id);
+  void persistPatrolUnits();
 
   return candidate.unit;
 };
 
 app.get("/health", async () => ({ ok: true }));
+
+app.post("/patrol/register", async (request, reply) => {
+  const body = z
+    .object({
+      deviceId: z.string().min(6),
+      platform: z.enum(["android", "ios"]).default("android"),
+      lat: z.number(),
+      lng: z.number(),
+      token: z.string().min(10).optional()
+    })
+    .parse(request.body);
+
+  const unit = upsertPatrolUnit({
+    deviceId: body.deviceId,
+    platform: body.platform,
+    lat: body.lat,
+    lng: body.lng
+  });
+
+  if (body.token) {
+    if (!isExpoPushToken(body.token)) {
+      return reply.code(400).send({ error: "Invalid Expo push token" });
+    }
+    const unitTokens = patrolPushTokens.get(unit.id) ?? new Set<string>();
+    unitTokens.add(body.token);
+    patrolPushTokens.set(unit.id, unitTokens);
+    await persistPatrolPushTokens();
+  }
+
+  await persistPatrolUnits();
+  return {
+    ok: true,
+    unitId: unit.id,
+    label: unit.label,
+    lat: unit.lat,
+    lng: unit.lng
+  };
+});
+
+app.post("/patrol/units/:unitId/heartbeat", async (request, reply) => {
+  const params = z.object({ unitId: z.string() }).parse(request.params);
+  const body = z
+    .object({
+      lat: z.number(),
+      lng: z.number()
+    })
+    .parse(request.body);
+
+  const unit = getPatrolUnitById(params.unitId);
+  if (!unit) {
+    return reply.code(404).send({ error: "Patrol unit not found" });
+  }
+
+  unit.lat = body.lat;
+  unit.lng = body.lng;
+  unit.lastSeenAt = new Date().toISOString();
+  await persistPatrolUnits();
+  return { ok: true };
+});
 
 app.post("/patrol/units/:unitId/push-token", async (request, reply) => {
   const params = z.object({ unitId: z.string() }).parse(request.params);
@@ -330,6 +466,23 @@ app.post("/patrol/units/:unitId/push-token", async (request, reply) => {
   const unitTokens = patrolPushTokens.get(params.unitId) ?? new Set<string>();
   unitTokens.add(body.token);
   patrolPushTokens.set(params.unitId, unitTokens);
+
+  const fallbackUnit = getPatrolUnitById(params.unitId);
+  if (!fallbackUnit) {
+    patrolUnits.push({
+      id: params.unitId,
+      label: params.unitId,
+      deviceId: params.unitId,
+      platform: body.platform,
+      lat: 42.6977,
+      lng: 23.3219,
+      lastSeenAt: new Date().toISOString(),
+      isAvailable: true,
+      activeReportId: null
+    });
+    await persistPatrolUnits();
+  }
+
   await persistPatrolPushTokens();
 
   return { ok: true, count: unitTokens.size };
@@ -338,11 +491,15 @@ app.post("/patrol/units/:unitId/push-token", async (request, reply) => {
 app.get("/patrol/units/:unitId/push-status", async (request) => {
   const params = z.object({ unitId: z.string() }).parse(request.params);
   const unitTokens = patrolPushTokens.get(params.unitId) ?? new Set<string>();
+  const unit = getPatrolUnitById(params.unitId);
 
   return {
     unitId: params.unitId,
     tokenCount: unitTokens.size,
-    hasTokens: unitTokens.size > 0
+    hasTokens: unitTokens.size > 0,
+    reachable: unitTokens.size > 0,
+    active: Boolean(unit && isUnitActiveRecently(unit)),
+    label: unit?.label
   };
 });
 
@@ -489,6 +646,8 @@ app.post("/patrol/incidents/:id/close", async (request, reply) => {
   if (patrolUnit) {
     patrolUnit.isAvailable = true;
     patrolUnit.activeReportId = null;
+    patrolUnit.lastSeenAt = new Date().toISOString();
+    await persistPatrolUnits();
   }
 
   broadcast("report_updated", report);
@@ -513,6 +672,7 @@ app.get("/ws/patrol", { websocket: true }, (socket) => {
 });
 
 const port = Number(process.env.PORT || 4000);
+await loadPatrolUnits();
 await loadPatrolPushTokens();
 await loadReports();
 await app.listen({ port, host: "0.0.0.0" });

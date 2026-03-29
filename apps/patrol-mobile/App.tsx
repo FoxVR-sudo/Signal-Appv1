@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Application from "expo-application";
+import * as Location from "expo-location";
 import {
   AppState,
   Alert,
@@ -44,9 +46,12 @@ type ShiftLog = {
 const API_BASE =
   process.env.EXPO_PUBLIC_BACKEND_URL ??
   "https://signal-backend-8pyp.onrender.com";
-const UNIT_ID = process.env.EXPO_PUBLIC_PATROL_UNIT_ID ?? "patrol-1";
+const UNIT_ID_FALLBACK = process.env.EXPO_PUBLIC_PATROL_UNIT_ID ?? "";
 const EAS_PROJECT_ID = "6106f6c5-ccb5-470f-8e2e-87821b98c257";
-const SHIFT_STORAGE_KEY = `@signal/patrol-shift/${UNIT_ID}`;
+const DEVICE_ID_KEY = "@signal/patrol-device-id";
+const UNIT_ID_KEY = "@signal/patrol-unit-id";
+const UNIT_LABEL_KEY = "@signal/patrol-unit-label";
+const SHIFT_STORAGE_PREFIX = "@signal/patrol-shift/";
 
 const createEmptyShiftLog = (): ShiftLog => ({
   startedAt: new Date().toISOString(),
@@ -67,16 +72,19 @@ Notifications.setNotificationHandler({
 export default function App() {
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [isConnected, setIsConnected] = useState(false);
+  const [unitId, setUnitId] = useState<string>(UNIT_ID_FALLBACK);
+  const [unitLabel, setUnitLabel] = useState<string>("");
   const [dispatchNotice, setDispatchNotice] = useState<string | null>(null);
   const [pendingActionReportId, setPendingActionReportId] = useState<string | null>(null);
   const [pushState, setPushState] = useState<string>("Push: инициализация...");
   const [previewPhotoUrl, setPreviewPhotoUrl] = useState<string | null>(null);
   const [shiftLog, setShiftLog] = useState<ShiftLog>(createEmptyShiftLog);
+  const shiftStorageKey = `${SHIFT_STORAGE_PREFIX}${unitId || "unassigned"}`;
 
   useEffect(() => {
     const loadShiftLog = async () => {
       try {
-        const raw = await AsyncStorage.getItem(SHIFT_STORAGE_KEY);
+        const raw = await AsyncStorage.getItem(shiftStorageKey);
         if (!raw) {
           return;
         }
@@ -98,13 +106,44 @@ export default function App() {
     };
 
     void loadShiftLog();
-  }, []);
+  }, [shiftStorageKey]);
 
   useEffect(() => {
-    AsyncStorage.setItem(SHIFT_STORAGE_KEY, JSON.stringify(shiftLog)).catch(() => {
+    AsyncStorage.setItem(shiftStorageKey, JSON.stringify(shiftLog)).catch(() => {
       // Ignore local persistence errors.
     });
-  }, [shiftLog]);
+  }, [shiftLog, shiftStorageKey]);
+
+  const getPatrolLocation = async () => {
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (!permission.granted) {
+        return { lat: 42.6977, lng: 23.3219 };
+      }
+
+      const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      return {
+        lat: current.coords.latitude,
+        lng: current.coords.longitude
+      };
+    } catch {
+      return { lat: 42.6977, lng: 23.3219 };
+    }
+  };
+
+  const resolveDeviceId = async () => {
+    const saved = await AsyncStorage.getItem(DEVICE_ID_KEY);
+    if (saved?.trim()) {
+      return saved;
+    }
+
+    const fromPlatform = Platform.OS === "android"
+      ? await Application.getAndroidId()
+      : Application.getIosIdForVendorAsync ? await Application.getIosIdForVendorAsync() : null;
+    const generated = fromPlatform || `device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    await AsyncStorage.setItem(DEVICE_ID_KEY, generated);
+    return generated;
+  };
 
   const dispatchLocalNotification = async (report: ReportRecord, isReassigned: boolean) => {
     try {
@@ -166,7 +205,7 @@ export default function App() {
             return [report, ...prev];
           });
 
-          if (!report.assignedUnitId || report.assignedUnitId === UNIT_ID) {
+          if (!report.assignedUnitId || report.assignedUnitId === unitId) {
             setDispatchNotice(`Нов сигнал: ${report.id.slice(0, 8)}`);
             Vibration.vibrate([120, 80, 120]);
           }
@@ -174,7 +213,7 @@ export default function App() {
 
         if (payload.type === "report_assigned" || payload.type === "report_reassigned") {
           const data = payload.data as { reportId: string; unitId: string; unitLabel?: string };
-          if (data?.unitId === UNIT_ID) {
+          if (data?.unitId === unitId) {
             setDispatchNotice(`Разпределен сигнал: ${data.reportId.slice(0, 8)}`);
             Vibration.vibrate([180, 80, 180, 80, 180]);
 
@@ -191,7 +230,7 @@ export default function App() {
 
           setReports((prev) => {
             const existingIndex = prev.findIndex((item) => item.id === report.id);
-            const belongsToUnit = report.assignedUnitId === UNIT_ID;
+            const belongsToUnit = report.assignedUnitId === unitId;
             const isNewForThisUnit = existingIndex < 0 && belongsToUnit;
 
             if (isNewForThisUnit && report.status === "assigned") {
@@ -244,7 +283,7 @@ export default function App() {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       ws?.close();
     };
-  }, [websocketUrl]);
+  }, [websocketUrl, unitId]);
 
   useEffect(() => {
     const refreshTimer = setInterval(() => {
@@ -289,18 +328,32 @@ export default function App() {
         }
 
         const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
-        const response = await fetch(`${API_BASE}/patrol/units/${UNIT_ID}/push-token`, {
+        const deviceId = await resolveDeviceId();
+        const location = await getPatrolLocation();
+
+        const response = await fetch(`${API_BASE}/patrol/register`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token, platform: Platform.OS })
+          body: JSON.stringify({
+            deviceId,
+            token,
+            platform: Platform.OS,
+            lat: location.lat,
+            lng: location.lng
+          })
         });
 
         if (!response.ok) {
-          setPushState(`Push: token registration failed (${response.status})`);
+          setPushState(`Push: registration failed (${response.status})`);
           return;
         }
 
-        setPushState("Push: активно");
+        const payload = (await response.json()) as { unitId: string; label: string };
+        setUnitId(payload.unitId);
+        setUnitLabel(payload.label);
+        await AsyncStorage.setItem(UNIT_ID_KEY, payload.unitId);
+        await AsyncStorage.setItem(UNIT_LABEL_KEY, payload.label);
+        setPushState(`Push: активно (${payload.label})`);
       } catch (error) {
         const message =
           error instanceof Error ? error.message.slice(0, 90) : "unknown error";
@@ -308,6 +361,22 @@ export default function App() {
       }
     };
 
+    const loadCachedUnit = async () => {
+      try {
+        const cachedId = await AsyncStorage.getItem(UNIT_ID_KEY);
+        const cachedLabel = await AsyncStorage.getItem(UNIT_LABEL_KEY);
+        if (cachedId?.trim()) {
+          setUnitId(cachedId);
+        }
+        if (cachedLabel?.trim()) {
+          setUnitLabel(cachedLabel);
+        }
+      } catch {
+        // Ignore cache read errors.
+      }
+    };
+
+    void loadCachedUnit();
     void registerPush();
 
     const responseSub = Notifications.addNotificationResponseReceivedListener(() => {
@@ -332,6 +401,37 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!unitId) return;
+
+    let stopped = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const sendHeartbeat = async () => {
+      if (stopped) return;
+      try {
+        const location = await getPatrolLocation();
+        await fetch(`${API_BASE}/patrol/units/${unitId}/heartbeat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lat: location.lat, lng: location.lng })
+        });
+      } catch {
+        // Ignore heartbeat errors.
+      }
+    };
+
+    void sendHeartbeat();
+    timer = setInterval(() => {
+      void sendHeartbeat();
+    }, 20_000);
+
+    return () => {
+      stopped = true;
+      if (timer) clearInterval(timer);
+    };
+  }, [unitId]);
+
   const updateStatus = async (reportId: string, action: "accept" | "arrived" | "close") => {
     setPendingActionReportId(reportId);
     try {
@@ -345,7 +445,7 @@ export default function App() {
       const response = await fetch(`${API_BASE}/patrol/incidents/${reportId}/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ unitId: UNIT_ID })
+        body: JSON.stringify({ unitId })
       });
 
       if (!response.ok) {
@@ -393,7 +493,7 @@ export default function App() {
   };
 
   const getAvailableActions = (report: ReportRecord) => {
-    if (report.assignedUnitId !== UNIT_ID) {
+    if (report.assignedUnitId !== unitId) {
       return [] as const;
     }
 
@@ -413,7 +513,11 @@ export default function App() {
   };
 
   const getColleagueStatusLabel = (report: ReportRecord) => {
-    if (!report.assignedUnitId || report.assignedUnitId === UNIT_ID) {
+    if (!report.assignedUnitId || report.assignedUnitId === unitId) {
+      return null;
+    }
+
+    if (!unitId) {
       return null;
     }
 
@@ -500,6 +604,7 @@ export default function App() {
 
       <View style={styles.header}>
         <Text style={styles.title}>Patrol Live Feed</Text>
+        <Text style={styles.subtitle}>Идентификатор: {unitLabel || unitId || "(регистрация...)"}</Text>
         <Text style={styles.subtitle}>
           Статус: {isConnected ? "Свързано в реално време" : "Изчаква връзка"}
         </Text>
@@ -531,7 +636,7 @@ export default function App() {
             ) : null}
             <View style={styles.cardTopRow}>
               <Text style={styles.cardTitle}>Сигнал: {item.id.slice(0, 8)}</Text>
-              {item.assignedUnitId && item.assignedUnitId !== UNIT_ID && item.status !== "closed" ? (
+              {item.assignedUnitId && item.assignedUnitId !== unitId && item.status !== "closed" ? (
                 <View style={styles.colleagueBadge}>
                   <Text style={styles.colleagueBadgeText}>Колега</Text>
                 </View>
@@ -576,7 +681,7 @@ export default function App() {
                 ))
               ) : (
                 <Text style={styles.actionMuted}>
-                  {item.assignedUnitId === UNIT_ID
+                  {item.assignedUnitId === unitId
                     ? "Няма следващо действие"
                     : "Информация: сигналът се обработва от друг патрул"}
                 </Text>
