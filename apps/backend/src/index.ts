@@ -164,8 +164,14 @@ const scheduleReassignment = (reportId: string) => {
     void sendPushToUnit(
       reassignedUnit.id,
       "Пренасочен сигнал",
-      `Сигнал ${report.id.slice(0, 8)} е прехвърлен към теб`,
-      { reportId: report.id, event: "report_reassigned" }
+      `Тел: ${report.phone} | ${report.lat.toFixed(4)}, ${report.lng.toFixed(4)}`,
+      {
+        reportId: report.id,
+        event: "report_reassigned",
+        phone: report.phone,
+        lat: String(report.lat),
+        lng: String(report.lng)
+      }
     );
     broadcast("report_updated", report);
     scheduleReassignment(report.id);
@@ -283,8 +289,14 @@ app.post("/reports", async (request, reply) => {
     void sendPushToUnit(
       assignedUnit.id,
       "Нов сигнал",
-      `Сигнал ${report.id.slice(0, 8)} е разпределен към теб`,
-      { reportId: report.id, event: "report_assigned" }
+      `Тел: ${report.phone} | ${report.lat.toFixed(4)}, ${report.lng.toFixed(4)}`,
+      {
+        reportId: report.id,
+        event: "report_assigned",
+        phone: report.phone,
+        lat: String(report.lat),
+        lng: String(report.lng)
+      }
     );
     scheduleReassignment(report.id);
   }

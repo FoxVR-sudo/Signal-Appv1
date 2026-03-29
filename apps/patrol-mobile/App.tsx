@@ -49,6 +49,22 @@ export default function App() {
   const [pendingActionReportId, setPendingActionReportId] = useState<string | null>(null);
   const [pushState, setPushState] = useState<string>("Push: инициализация...");
 
+  const dispatchLocalNotification = async (report: ReportRecord, isReassigned: boolean) => {
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: isReassigned ? "Пренасочен сигнал" : "Нов сигнал",
+          body: `Тел: ${report.phone} | ${report.lat.toFixed(4)}, ${report.lng.toFixed(4)}`,
+          sound: "default",
+          data: { reportId: report.id }
+        },
+        trigger: null
+      });
+    } catch {
+      // Ignore local notification errors.
+    }
+  };
+
   const websocketUrl = useMemo(() => {
     if (API_BASE.startsWith("https://")) {
       return API_BASE.replace("https://", "wss://") + "/ws/patrol";
@@ -99,6 +115,11 @@ export default function App() {
           if (data?.unitId === UNIT_ID) {
             setDispatchNotice(`Разпределен сигнал: ${data.reportId.slice(0, 8)}`);
             Vibration.vibrate([180, 80, 180, 80, 180]);
+
+            const report = reports.find((item) => item.id === data.reportId);
+            if (report) {
+              void dispatchLocalNotification(report, payload.type === "report_reassigned");
+            }
           }
         }
 
@@ -114,6 +135,7 @@ export default function App() {
             if (isNewForThisUnit && report.status === "assigned") {
               setDispatchNotice(`Сигнал към теб: ${report.id.slice(0, 8)}`);
               Vibration.vibrate([150, 60, 150]);
+              void dispatchLocalNotification(report, false);
             }
 
             if (existingIndex >= 0) {
@@ -218,13 +240,15 @@ export default function App() {
         });
 
         if (!response.ok) {
-          setPushState("Push: token registration failed");
+          setPushState(`Push: token registration failed (${response.status})`);
           return;
         }
 
         setPushState("Push: активно");
-      } catch {
-        setPushState("Push: недостъпно");
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message.slice(0, 90) : "unknown error";
+        setPushState(`Push: недостъпно (${message})`);
       }
     };
 
@@ -250,7 +274,7 @@ export default function App() {
       receiveSub.remove();
       appStateSub.remove();
     };
-  }, []);
+  }, [reports]);
 
   const updateStatus = async (reportId: string, action: "accept" | "arrived" | "close") => {
     setPendingActionReportId(reportId);
