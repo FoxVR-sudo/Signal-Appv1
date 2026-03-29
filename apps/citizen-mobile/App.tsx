@@ -5,7 +5,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  PermissionsAndroid,
   Platform,
   Pressable,
   SafeAreaView,
@@ -15,7 +14,6 @@ import {
   TextInput,
   View
 } from "react-native";
-import DeviceInfo from "react-native-device-info";
 const BACKEND_URL =
   process.env.EXPO_PUBLIC_BACKEND_URL ??
   "https://signal-backend-8pyp.onrender.com";
@@ -79,36 +77,14 @@ export default function App() {
     return digits;
   };
 
+  const hasValidPhone = normalizePhone(phone).length >= 10;
+
   useEffect(() => {
     const loadSavedPhone = async () => {
       try {
-        // 1. Try AsyncStorage first (previously confirmed number)
         const savedPhone = await AsyncStorage.getItem(SAVED_PHONE_KEY);
         if (savedPhone?.trim()) {
           setPhone(savedPhone.trim());
-          return;
-        }
-
-        // 2. Try to read the SIM phone number from the device
-        if (Platform.OS === "android") {
-          try {
-            const granted = await PermissionsAndroid.request(
-              PermissionsAndroid.PERMISSIONS.READ_PHONE_NUMBERS
-            );
-            if (granted === PermissionsAndroid.RESULTS.GRANTED) {
-              const deviceInfoWithPhone = DeviceInfo as typeof DeviceInfo & {
-                getPhoneNumber?: () => Promise<string>;
-              };
-              const devicePhone = deviceInfoWithPhone.getPhoneNumber
-                ? await deviceInfoWithPhone.getPhoneNumber()
-                : "";
-              if (devicePhone && devicePhone !== "unknown" && devicePhone.length >= 8) {
-                setPhone(devicePhone);
-              }
-            }
-          } catch {
-            // Device doesn't expose SIM number; leave field empty.
-          }
         }
       } finally {
         setIsPhoneLoaded(true);
@@ -203,7 +179,7 @@ export default function App() {
   };
 
   const openCamera = async () => {
-    if (normalizePhone(phone).length < 8) {
+    if (!hasValidPhone) {
       Alert.alert("Липсва телефон", "Въведи валиден телефонен номер.");
       return;
     }
@@ -370,14 +346,20 @@ export default function App() {
           value={phone}
           onChangeText={setPhone}
           keyboardType="phone-pad"
-          placeholder="Телефонен номер"
+          placeholder="Телефонен номер (задължително)"
           autoComplete="tel"
           textContentType="telephoneNumber"
           style={styles.input}
           editable={isPhoneLoaded}
         />
 
-        <Pressable style={styles.button} onPress={openCamera}>
+        <Text style={styles.requiredHint}>Телефонният номер е задължителен за подаване на сигнал.</Text>
+
+        <Pressable
+          style={[styles.button, !hasValidPhone && styles.buttonDisabled]}
+          onPress={openCamera}
+          disabled={!hasValidPhone}
+        >
           <Text style={styles.buttonText}>Подай сигнал</Text>
         </Pressable>
 
@@ -489,7 +471,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     alignItems: "center"
   },
+  buttonDisabled: {
+    opacity: 0.45
+  },
   buttonText: { color: "#fff", fontSize: 20, fontWeight: "700" },
+  requiredHint: {
+    width: "100%",
+    maxWidth: 320,
+    marginTop: -4,
+    marginBottom: 14,
+    fontSize: 12,
+    lineHeight: 18,
+    color: "#7c2d12"
+  },
   statusBox: {
     width: "100%",
     maxWidth: 320,
