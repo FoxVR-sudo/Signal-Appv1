@@ -55,6 +55,8 @@ const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const patrolPushTokens = new Map<string, Set<string>>();
 const PUSH_TOKEN_STORE_DIR = path.join(process.cwd(), ".data");
 const PUSH_TOKEN_STORE_PATH = path.join(PUSH_TOKEN_STORE_DIR, "patrol-push-tokens.json");
+const REPORT_STORE_DIR = path.join(process.cwd(), ".data");
+const REPORT_STORE_PATH = path.join(REPORT_STORE_DIR, "reports.json");
 
 const toRadians = (value: number) => (value * Math.PI) / 180;
 
@@ -106,6 +108,47 @@ const persistPatrolPushTokens = async () => {
     await fs.writeFile(PUSH_TOKEN_STORE_PATH, JSON.stringify(snapshot), "utf-8");
   } catch (error) {
     app.log.warn({ error }, "Failed to persist patrol push token store");
+  }
+};
+
+const loadReports = async () => {
+  try {
+    const raw = await fs.readFile(REPORT_STORE_PATH, "utf-8");
+    const parsed = JSON.parse(raw) as ReportRecord[];
+    if (!Array.isArray(parsed)) {
+      return;
+    }
+
+    reports.splice(0, reports.length, ...parsed);
+
+    // Rebuild unit availability from persisted open incidents.
+    for (const unit of patrolUnits) {
+      unit.isAvailable = true;
+      unit.activeReportId = null;
+    }
+
+    for (const report of parsed) {
+      if (!report.assignedUnitId) continue;
+      if (report.status === "closed") continue;
+
+      const unit = patrolUnits.find((item) => item.id === report.assignedUnitId);
+      if (!unit) continue;
+      unit.isAvailable = false;
+      unit.activeReportId = report.id;
+    }
+
+    app.log.info({ count: reports.length }, "Loaded persisted reports store");
+  } catch {
+    app.log.info("No persisted reports store found");
+  }
+};
+
+const persistReports = async () => {
+  try {
+    await fs.mkdir(REPORT_STORE_DIR, { recursive: true });
+    await fs.writeFile(REPORT_STORE_PATH, JSON.stringify(reports), "utf-8");
+  } catch (error) {
+    app.log.warn({ error }, "Failed to persist reports store");
   }
 };
 
@@ -198,6 +241,7 @@ const scheduleReassignment = (reportId: string) => {
       report.assignedUnitId = null;
       report.status = "submitted";
       broadcast("report_pending_dispatch", report);
+      void persistReports();
       return;
     }
 
@@ -219,6 +263,7 @@ const scheduleReassignment = (reportId: string) => {
       }
     );
     broadcast("report_updated", report);
+    void persistReports();
     scheduleReassignment(report.id);
   }, ASSIGNMENT_TIMEOUT_MS);
 
@@ -337,6 +382,7 @@ app.post("/reports", async (request, reply) => {
   };
 
   reports.push(report);
+  await persistReports();
   const assignedUnit = assignNearestPatrol(report);
 
   broadcast("report_created", report);
@@ -359,6 +405,7 @@ app.post("/reports", async (request, reply) => {
       }
     );
     scheduleReassignment(report.id);
+    await persistReports();
   }
 
   return reply.code(201).send(report);
@@ -380,6 +427,7 @@ app.post("/patrol/incidents/:id/accept", async (request, reply) => {
   report.acceptedAt = new Date().toISOString();
   clearReassignmentTimer(report.id);
   broadcast("report_updated", report);
+  await persistReports();
   return { ok: true, report };
 });
 
@@ -398,6 +446,7 @@ app.post("/patrol/incidents/:id/arrived", async (request, reply) => {
   report.status = "on_site";
   report.arrivedAt = new Date().toISOString();
   broadcast("report_updated", report);
+  await persistReports();
   return { ok: true, report };
 });
 
@@ -423,6 +472,7 @@ app.post("/patrol/incidents/:id/close", async (request, reply) => {
   }
 
   broadcast("report_updated", report);
+  await persistReports();
   return { ok: true, report };
 });
 
@@ -444,4 +494,5 @@ app.get("/ws/patrol", { websocket: true }, (socket) => {
 
 const port = Number(process.env.PORT || 4000);
 await loadPatrolPushTokens();
+await loadReports();
 await app.listen({ port, host: "0.0.0.0" });
