@@ -57,6 +57,7 @@ export default function App() {
           title: isReassigned ? "Пренасочен сигнал" : "Нов сигнал",
           body: `Тел: ${report.phone} | ${report.lat.toFixed(4)}, ${report.lng.toFixed(4)}`,
           sound: "default",
+          priority: Notifications.AndroidNotificationPriority.MAX,
           data: { reportId: report.id }
         },
         trigger: null
