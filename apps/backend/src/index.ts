@@ -224,6 +224,17 @@ app.post("/patrol/units/:unitId/push-token", async (request, reply) => {
   return { ok: true, count: unitTokens.size };
 });
 
+app.get("/patrol/units/:unitId/push-status", async (request) => {
+  const params = z.object({ unitId: z.string() }).parse(request.params);
+  const unitTokens = patrolPushTokens.get(params.unitId) ?? new Set<string>();
+
+  return {
+    unitId: params.unitId,
+    tokenCount: unitTokens.size,
+    hasTokens: unitTokens.size > 0
+  };
+});
+
 app.get("/patrol/incidents/live", async (request) => {
   const query = z
     .object({

@@ -32,6 +32,7 @@ const API_BASE =
   process.env.EXPO_PUBLIC_BACKEND_URL ??
   "https://signal-backend-8pyp.onrender.com";
 const UNIT_ID = process.env.EXPO_PUBLIC_PATROL_UNIT_ID ?? "patrol-1";
+const EAS_PROJECT_ID = "6106f6c5-ccb5-470f-8e2e-87821b98c257";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -225,7 +226,8 @@ export default function App() {
         const projectId =
           Constants.easConfig?.projectId ??
           ((Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined)?.eas
-            ?.projectId ?? null);
+            ?.projectId ??
+            EAS_PROJECT_ID);
 
         if (!projectId) {
           setPushState("Push: липсва projectId");
