@@ -12,6 +12,7 @@
       "bundleIdentifier": "bg.signal.citizen",
       "supportsTablet": false,
       "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
         "NSCameraUsageDescription": "Signal Citizen използва камерата за снимка към сигнал.",
         "NSLocationWhenInUseUsageDescription": "Signal Citizen използва локация, за да изпрати точни координати към сигнала."
       }
