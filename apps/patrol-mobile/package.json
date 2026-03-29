@@ -11,10 +11,11 @@
   },
   "dependencies": {
     "@babel/runtime": "^7.29.0",
+    "@react-native-async-storage/async-storage": "^2.2.0",
     "expo": "^54.0.33",
     "expo-constants": "~18.0.10",
-    "expo-notifications": "~0.32.13",
     "expo-modules-core": "^3.0.29",
+    "expo-notifications": "~0.32.13",
     "react": "19.1.0",
     "react-native": "0.81.5"
   },

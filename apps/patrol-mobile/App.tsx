@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   AppState,
   Alert,
@@ -30,11 +31,26 @@ type ReportRecord = {
   assignedUnitId: string | null;
 };
 
+type ShiftLog = {
+  startedAt: string;
+  acceptedIds: string[];
+  arrivedIds: string[];
+  closedIds: string[];
+};
+
 const API_BASE =
   process.env.EXPO_PUBLIC_BACKEND_URL ??
   "https://signal-backend-8pyp.onrender.com";
 const UNIT_ID = process.env.EXPO_PUBLIC_PATROL_UNIT_ID ?? "patrol-1";
 const EAS_PROJECT_ID = "6106f6c5-ccb5-470f-8e2e-87821b98c257";
+const SHIFT_STORAGE_KEY = `@signal/patrol-shift/${UNIT_ID}`;
+
+const createEmptyShiftLog = (): ShiftLog => ({
+  startedAt: new Date().toISOString(),
+  acceptedIds: [],
+  arrivedIds: [],
+  closedIds: []
+});
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -52,6 +68,40 @@ export default function App() {
   const [pendingActionReportId, setPendingActionReportId] = useState<string | null>(null);
   const [pushState, setPushState] = useState<string>("Push: инициализация...");
   const [previewPhotoUrl, setPreviewPhotoUrl] = useState<string | null>(null);
+  const [shiftLog, setShiftLog] = useState<ShiftLog>(createEmptyShiftLog);
+
+  useEffect(() => {
+    const loadShiftLog = async () => {
+      try {
+        const raw = await AsyncStorage.getItem(SHIFT_STORAGE_KEY);
+        if (!raw) {
+          return;
+        }
+
+        const parsed = JSON.parse(raw) as Partial<ShiftLog>;
+        if (!parsed.startedAt) {
+          return;
+        }
+
+        setShiftLog({
+          startedAt: parsed.startedAt,
+          acceptedIds: Array.isArray(parsed.acceptedIds) ? parsed.acceptedIds : [],
+          arrivedIds: Array.isArray(parsed.arrivedIds) ? parsed.arrivedIds : [],
+          closedIds: Array.isArray(parsed.closedIds) ? parsed.closedIds : []
+        });
+      } catch {
+        // Ignore corrupted local shift log.
+      }
+    };
+
+    void loadShiftLog();
+  }, []);
+
+  useEffect(() => {
+    AsyncStorage.setItem(SHIFT_STORAGE_KEY, JSON.stringify(shiftLog)).catch(() => {
+      // Ignore local persistence errors.
+    });
+  }, [shiftLog]);
 
   const dispatchLocalNotification = async (report: ReportRecord, isReassigned: boolean) => {
     try {
@@ -316,6 +366,20 @@ export default function App() {
 
       const payload = (await response.json()) as { report: ReportRecord };
       setReports((prev) => prev.map((item) => (item.id === reportId ? payload.report : item)));
+      setShiftLog((prev) => {
+        if (action === "accept") {
+          if (prev.acceptedIds.includes(reportId)) return prev;
+          return { ...prev, acceptedIds: [...prev.acceptedIds, reportId] };
+        }
+
+        if (action === "arrived") {
+          if (prev.arrivedIds.includes(reportId)) return prev;
+          return { ...prev, arrivedIds: [...prev.arrivedIds, reportId] };
+        }
+
+        if (prev.closedIds.includes(reportId)) return prev;
+        return { ...prev, closedIds: [...prev.closedIds, reportId] };
+      });
       setDispatchNotice(
         action === "accept"
           ? `Сигналът е приет: ${reportId.slice(0, 8)}`
@@ -373,6 +437,17 @@ export default function App() {
     }
   };
 
+  const startNewShift = () => {
+    Alert.alert("Нова смяна", "Да занулим статистиката и да започнем нова смяна?", [
+      { text: "Отказ", style: "cancel" },
+      {
+        text: "Да",
+        style: "destructive",
+        onPress: () => setShiftLog(createEmptyShiftLog())
+      }
+    ]);
+  };
+
   useEffect(() => {
     void refreshReports();
   }, [dispatchNotice]);
@@ -401,6 +476,17 @@ export default function App() {
           Статус: {isConnected ? "Свързано в реално време" : "Изчаква връзка"}
         </Text>
         <Text style={styles.subtitle}>{pushState}</Text>
+        <View style={styles.shiftBox}>
+          <Text style={styles.shiftTitle}>
+            Смяна: {new Date(shiftLog.startedAt).toLocaleString("bg-BG", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" })}
+          </Text>
+          <Text style={styles.shiftStat}>Отзовали сигнали: {shiftLog.acceptedIds.length}</Text>
+          <Text style={styles.shiftStat}>На място: {shiftLog.arrivedIds.length}</Text>
+          <Text style={styles.shiftStat}>Приключени: {shiftLog.closedIds.length}</Text>
+          <Pressable style={styles.newShiftButton} onPress={startNewShift}>
+            <Text style={styles.newShiftButtonText}>Нова смяна</Text>
+          </Pressable>
+        </View>
         {dispatchNotice ? <Text style={styles.notice}>{dispatchNotice}</Text> : null}
       </View>
 
@@ -458,6 +544,39 @@ const styles = StyleSheet.create({
   header: { padding: 20, gap: 8 },
   title: { fontSize: 24, fontWeight: "800" },
   subtitle: { fontSize: 15, color: "#425466" },
+  shiftBox: {
+    marginTop: 2,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#d6dee8",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 4
+  },
+  shiftTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#0f172a"
+  },
+  shiftStat: {
+    fontSize: 14,
+    color: "#334155"
+  },
+  newShiftButton: {
+    alignSelf: "flex-start",
+    marginTop: 6,
+    backgroundColor: "#f1f5f9",
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    borderRadius: 9,
+    paddingHorizontal: 12,
+    paddingVertical: 8
+  },
+  newShiftButtonText: {
+    color: "#0f172a",
+    fontWeight: "700"
+  },
   notice: {
     marginTop: 6,
     backgroundColor: "#fff3bf",
