@@ -130,7 +130,7 @@ export default function App() {
   useEffect(() => {
     const loadInitialReports = async () => {
       try {
-        const response = await fetch(`${API_BASE}/patrol/incidents/live?unitId=${UNIT_ID}`);
+        const response = await fetch(`${API_BASE}/patrol/incidents/live`);
         if (!response.ok) {
           return;
         }
@@ -158,8 +158,12 @@ export default function App() {
           const report = payload.data as ReportRecord;
           if (!report) return;
 
+          setReports((prev) => {
+            if (prev.some((item) => item.id === report.id)) return prev;
+            return [report, ...prev];
+          });
+
           if (!report.assignedUnitId || report.assignedUnitId === UNIT_ID) {
-            setReports((prev) => [report, ...prev]);
             setDispatchNotice(`Нов сигнал: ${report.id.slice(0, 8)}`);
             Vibration.vibrate([120, 80, 120]);
           }
@@ -184,7 +188,7 @@ export default function App() {
 
           setReports((prev) => {
             const existingIndex = prev.findIndex((item) => item.id === report.id);
-            const belongsToUnit = !report.assignedUnitId || report.assignedUnitId === UNIT_ID;
+            const belongsToUnit = report.assignedUnitId === UNIT_ID;
             const isNewForThisUnit = existingIndex < 0 && belongsToUnit;
 
             if (isNewForThisUnit && report.status === "assigned") {
@@ -194,17 +198,10 @@ export default function App() {
             }
 
             if (existingIndex >= 0) {
-              if (!belongsToUnit) {
-                return prev.filter((item) => item.id !== report.id);
-              }
               return prev.map((item) => (item.id === report.id ? report : item));
             }
 
-            if (belongsToUnit) {
-              return [report, ...prev];
-            }
-
-            return prev;
+            return [report, ...prev];
           });
         }
       } catch {
@@ -330,7 +327,7 @@ export default function App() {
       receiveSub.remove();
       appStateSub.remove();
     };
-  }, [reports]);
+  }, []);
 
   const updateStatus = async (reportId: string, action: "accept" | "arrived" | "close") => {
     setPendingActionReportId(reportId);
@@ -393,6 +390,10 @@ export default function App() {
   };
 
   const getAvailableActions = (report: ReportRecord) => {
+    if (report.assignedUnitId !== UNIT_ID) {
+      return [] as const;
+    }
+
     if (report.status === "assigned") {
       return [{ key: "accept", label: "Приемам" }] as const;
     }
@@ -410,7 +411,7 @@ export default function App() {
 
   const refreshReports = async () => {
     try {
-      const response = await fetch(`${API_BASE}/patrol/incidents/live?unitId=${UNIT_ID}`);
+      const response = await fetch(`${API_BASE}/patrol/incidents/live`);
       if (!response.ok) {
         return;
       }
@@ -496,13 +497,21 @@ export default function App() {
         contentContainerStyle={styles.list}
         renderItem={({ item }) => (
           <View style={styles.card}>
+            <View style={styles.cardTopRow}>
+              <Text style={styles.cardTitle}>Сигнал: {item.id.slice(0, 8)}</Text>
+              {item.assignedUnitId && item.assignedUnitId !== UNIT_ID ? (
+                <View style={styles.colleagueBadge}>
+                  <Text style={styles.colleagueBadgeText}>Поет от колега</Text>
+                </View>
+              ) : null}
+            </View>
             <Pressable onPress={() => setPreviewPhotoUrl(item.photoUrl)}>
               <Image source={{ uri: item.photoUrl }} style={styles.photo} resizeMode="cover" />
               <View style={styles.photoHintChip}>
                 <Text style={styles.photoHintChipText}>Отвори снимката</Text>
               </View>
             </Pressable>
-            <Text style={styles.cardTitle}>Сигнал: {item.id.slice(0, 8)}</Text>
+            <Text style={styles.cardText}>Патрул: {item.assignedUnitId ?? "в изчакване"}</Text>
             <Text style={styles.cardText}>Телефон: {item.phone}</Text>
             <Text style={styles.cardText}>
               Координати: {item.lat.toFixed(5)}, {item.lng.toFixed(5)}
@@ -528,7 +537,11 @@ export default function App() {
                   </Pressable>
                 ))
               ) : (
-                <Text style={styles.actionMuted}>Няма следващо действие</Text>
+                <Text style={styles.actionMuted}>
+                  {item.assignedUnitId === UNIT_ID
+                    ? "Няма следващо действие"
+                    : "Информация: сигналът се обработва от друг патрул"}
+                </Text>
               )}
             </View>
           </View>
@@ -595,6 +608,26 @@ const styles = StyleSheet.create({
     padding: 12,
     borderWidth: 1,
     borderColor: "#d6dee8"
+  },
+  cardTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+    gap: 8
+  },
+  colleagueBadge: {
+    backgroundColor: "#fef3c7",
+    borderWidth: 1,
+    borderColor: "#fbbf24",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4
+  },
+  colleagueBadgeText: {
+    color: "#92400e",
+    fontSize: 12,
+    fontWeight: "700"
   },
   photo: {
     width: "100%",

@@ -2,6 +2,8 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import { z } from "zod";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 
 type ReportStatus = "submitted" | "assigned" | "accepted" | "on_site" | "closed";
 
@@ -48,6 +50,8 @@ const reassignmentTimers = new Map<string, NodeJS.Timeout>();
 const ASSIGNMENT_TIMEOUT_MS = 120_000;
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const patrolPushTokens = new Map<string, Set<string>>();
+const PUSH_TOKEN_STORE_DIR = path.join(process.cwd(), ".data");
+const PUSH_TOKEN_STORE_PATH = path.join(PUSH_TOKEN_STORE_DIR, "patrol-push-tokens.json");
 
 const toRadians = (value: number) => (value * Math.PI) / 180;
 
@@ -69,6 +73,38 @@ const broadcast = (type: string, data: unknown) => {
 };
 
 const isExpoPushToken = (token: string) => /^ExponentPushToken\[[\w-]+\]$/.test(token);
+
+const loadPatrolPushTokens = async () => {
+  try {
+    const raw = await fs.readFile(PUSH_TOKEN_STORE_PATH, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, string[]>;
+
+    for (const [unitId, tokens] of Object.entries(parsed)) {
+      const valid = (tokens ?? []).filter((token) => typeof token === "string" && isExpoPushToken(token));
+      if (valid.length) {
+        patrolPushTokens.set(unitId, new Set(valid));
+      }
+    }
+
+    app.log.info({ units: patrolPushTokens.size }, "Loaded patrol push token store");
+  } catch {
+    app.log.info("No persisted patrol push token store found");
+  }
+};
+
+const persistPatrolPushTokens = async () => {
+  const snapshot: Record<string, string[]> = {};
+  for (const [unitId, tokens] of patrolPushTokens.entries()) {
+    snapshot[unitId] = [...tokens];
+  }
+
+  try {
+    await fs.mkdir(PUSH_TOKEN_STORE_DIR, { recursive: true });
+    await fs.writeFile(PUSH_TOKEN_STORE_PATH, JSON.stringify(snapshot), "utf-8");
+  } catch (error) {
+    app.log.warn({ error }, "Failed to persist patrol push token store");
+  }
+};
 
 const sendPushToUnit = async (
   unitId: string,
@@ -110,6 +146,7 @@ const sendPushToUnit = async (
       data?: Array<{ status: "ok" | "error"; details?: { error?: string } }>;
     };
 
+    let removedInvalidToken = false;
     payload.data?.forEach((ticket, index) => {
       if (ticket.status !== "error") {
         return;
@@ -119,8 +156,13 @@ const sendPushToUnit = async (
       app.log.warn({ unitId, token, error: ticket.details?.error }, "Expo push ticket returned error");
       if (ticket.details?.error === "DeviceNotRegistered" && token) {
         tokens.delete(token);
+        removedInvalidToken = true;
       }
     });
+
+    if (removedInvalidToken) {
+      await persistPatrolPushTokens();
+    }
   } catch (error) {
     app.log.warn({ unitId, error }, "Expo push send request failed");
   }
@@ -220,6 +262,7 @@ app.post("/patrol/units/:unitId/push-token", async (request, reply) => {
   const unitTokens = patrolPushTokens.get(params.unitId) ?? new Set<string>();
   unitTokens.add(body.token);
   patrolPushTokens.set(params.unitId, unitTokens);
+  await persistPatrolPushTokens();
 
   return { ok: true, count: unitTokens.size };
 });
@@ -391,4 +434,5 @@ app.get("/ws/patrol", { websocket: true }, (socket) => {
 });
 
 const port = Number(process.env.PORT || 4000);
+await loadPatrolPushTokens();
 await app.listen({ port, host: "0.0.0.0" });
