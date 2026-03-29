@@ -219,8 +219,16 @@ export default function App() {
 
           setReports((prev) => {
             const existingIndex = prev.findIndex((item) => item.id === report.id);
-            const belongsToUnit = report.assignedUnitId === unitId;
-            const isNewForThisUnit = existingIndex < 0 && belongsToUnit;
+            const belongsToUnit = Boolean(unitId) && report.assignedUnitId === unitId;
+
+            if (!belongsToUnit) {
+              if (existingIndex >= 0) {
+                return prev.filter((item) => item.id !== report.id);
+              }
+              return prev;
+            }
+
+            const isNewForThisUnit = existingIndex < 0;
 
             if (isNewForThisUnit && report.status === "assigned") {
               setDispatchNotice(`Сигнал към теб: ${report.id.slice(0, 8)}`);
@@ -530,9 +538,13 @@ export default function App() {
   };
 
   const refreshReports = async () => {
+    if (!unitId) {
+      setReports([]);
+      return;
+    }
+
     try {
-      const query = unitId ? `?unitId=${encodeURIComponent(unitId)}` : "";
-      const response = await fetch(`${API_BASE}/patrol/incidents/live${query}`);
+      const response = await fetch(`${API_BASE}/patrol/incidents/live?unitId=${encodeURIComponent(unitId)}`);
       if (!response.ok) {
         return;
       }
