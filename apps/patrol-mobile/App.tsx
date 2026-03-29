@@ -29,6 +29,9 @@ type ReportRecord = {
   receivedAtServer: string;
   status: "submitted" | "assigned" | "accepted" | "on_site" | "closed";
   assignedUnitId: string | null;
+  acceptedAt: string | null;
+  arrivedAt: string | null;
+  closedAt: string | null;
 };
 
 type ShiftLog = {
@@ -428,6 +431,11 @@ export default function App() {
     }
   };
 
+  const formatServerStageTime = (value: string | null) => {
+    if (!value) return "-";
+    return new Date(value).toLocaleString("bg-BG");
+  };
+
   const refreshReports = async () => {
     try {
       const response = await fetch(`${API_BASE}/patrol/incidents/live`);
@@ -546,8 +554,14 @@ export default function App() {
             <Text style={styles.cardText}>Точност: {Math.round(item.gpsAccuracyM)} м</Text>
             <Text style={styles.cardText}>Статус: {item.status}</Text>
             <Text style={styles.cardText}>
-              Получен: {new Date(item.receivedAtServer).toLocaleString()}
+              Получен: {new Date(item.receivedAtServer).toLocaleString("bg-BG")}
             </Text>
+            <View style={styles.timelineBox}>
+              <Text style={styles.timelineTitle}>Етапи (сървърно време)</Text>
+              <Text style={styles.timelineText}>Приет: {formatServerStageTime(item.acceptedAt)}</Text>
+              <Text style={styles.timelineText}>На място: {formatServerStageTime(item.arrivedAt)}</Text>
+              <Text style={styles.timelineText}>Приключен: {formatServerStageTime(item.closedAt)}</Text>
+            </View>
             <View style={styles.actions}>
               {getAvailableActions(item).length ? (
                 getAvailableActions(item).map((action) => (
@@ -705,6 +719,26 @@ const styles = StyleSheet.create({
   mapButtonText: {
     color: "#0b3d91",
     fontWeight: "700"
+  },
+  timelineBox: {
+    marginTop: 8,
+    backgroundColor: "#f8fafc",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 2
+  },
+  timelineTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#1e293b",
+    marginBottom: 2
+  },
+  timelineText: {
+    fontSize: 12,
+    color: "#334155"
   },
   actions: {
     marginTop: 10,

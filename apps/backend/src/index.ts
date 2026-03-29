@@ -19,6 +19,9 @@ type ReportRecord = {
   status: ReportStatus;
   assignedUnitId: string | null;
   assignmentAttempts: string[];
+  acceptedAt: string | null;
+  arrivedAt: string | null;
+  closedAt: string | null;
 };
 
 type PatrolUnit = {
@@ -327,7 +330,10 @@ app.post("/reports", async (request, reply) => {
     receivedAtServer: new Date().toISOString(),
     status: "submitted" as const,
     assignedUnitId: null,
-    assignmentAttempts: []
+    assignmentAttempts: [],
+    acceptedAt: null,
+    arrivedAt: null,
+    closedAt: null
   };
 
   reports.push(report);
@@ -371,6 +377,7 @@ app.post("/patrol/incidents/:id/accept", async (request, reply) => {
   }
 
   report.status = "accepted";
+  report.acceptedAt = new Date().toISOString();
   clearReassignmentTimer(report.id);
   broadcast("report_updated", report);
   return { ok: true, report };
@@ -389,6 +396,7 @@ app.post("/patrol/incidents/:id/arrived", async (request, reply) => {
   }
 
   report.status = "on_site";
+  report.arrivedAt = new Date().toISOString();
   broadcast("report_updated", report);
   return { ok: true, report };
 });
@@ -406,6 +414,7 @@ app.post("/patrol/incidents/:id/close", async (request, reply) => {
   }
 
   report.status = "closed";
+  report.closedAt = new Date().toISOString();
   clearReassignmentTimer(report.id);
   const patrolUnit = patrolUnits.find((unit) => unit.id === body.unitId);
   if (patrolUnit) {
