@@ -5,8 +5,17 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "platforms": [
-      "android"
+      "android",
+      "ios"
     ],
+    "ios": {
+      "bundleIdentifier": "bg.signal.citizen",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Signal Citizen използва камерата за снимка към сигнал.",
+        "NSLocationWhenInUseUsageDescription": "Signal Citizen използва локация, за да изпрати точни координати към сигнала."
+      }
+    },
     "android": {
       "package": "bg.signal.citizen",
       "permissions": [
