@@ -170,22 +170,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const loadInitialReports = async () => {
-      try {
-        const response = await fetch(`${API_BASE}/patrol/incidents/live`);
-        if (!response.ok) {
-          return;
-        }
-
-        const payload = (await response.json()) as ReportRecord[];
-        setReports(payload);
-      } catch {
-        // Ignore transient startup errors.
-      }
-    };
-
-    void loadInitialReports();
-  }, []);
+    void refreshReports();
+  }, [unitId]);
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -201,6 +187,9 @@ export default function App() {
           if (!report) return;
 
           setReports((prev) => {
+            if (!unitId || report.assignedUnitId !== unitId) {
+              return prev;
+            }
             if (prev.some((item) => item.id === report.id)) return prev;
             return [report, ...prev];
           });
@@ -542,7 +531,8 @@ export default function App() {
 
   const refreshReports = async () => {
     try {
-      const response = await fetch(`${API_BASE}/patrol/incidents/live`);
+      const query = unitId ? `?unitId=${encodeURIComponent(unitId)}` : "";
+      const response = await fetch(`${API_BASE}/patrol/incidents/live${query}`);
       if (!response.ok) {
         return;
       }

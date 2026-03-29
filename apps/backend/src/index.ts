@@ -57,7 +57,7 @@ const PUSH_TOKEN_STORE_PATH = path.join(PUSH_TOKEN_STORE_DIR, "patrol-push-token
 const REPORT_STORE_DIR = path.join(process.cwd(), ".data");
 const REPORT_STORE_PATH = path.join(REPORT_STORE_DIR, "reports.json");
 const PATROL_UNIT_STORE_PATH = path.join(process.cwd(), ".data", "patrol-units.json");
-const PATROL_ACTIVE_WINDOW_MS = 6 * 60 * 60 * 1000;
+const PATROL_ACTIVE_WINDOW_MS = 120_000;
 
 const toRadians = (value: number) => (value * Math.PI) / 180;
 
@@ -227,11 +227,13 @@ const loadReports = async () => {
     }
 
     for (const report of parsed) {
-      // If a report is assigned to a unit with no reachable channel, put it back to dispatch queue.
+      const assignedUnit = report.assignedUnitId ? getPatrolUnitById(report.assignedUnitId) : null;
+
+      // If assigned unit is missing, unreachable, or stale, return incident to dispatch queue.
       if (
         report.assignedUnitId &&
         report.status !== "closed" &&
-        (!isUnitReachable(report.assignedUnitId) || !getPatrolUnitById(report.assignedUnitId))
+        (!assignedUnit || !isUnitReachable(report.assignedUnitId) || !isUnitActiveRecently(assignedUnit))
       ) {
         report.assignedUnitId = null;
         report.status = "submitted";
