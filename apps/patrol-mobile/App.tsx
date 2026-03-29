@@ -4,6 +4,8 @@ import {
   Alert,
   FlatList,
   Image,
+  Linking,
+  Modal,
   Platform,
   Pressable,
   SafeAreaView,
@@ -49,6 +51,7 @@ export default function App() {
   const [dispatchNotice, setDispatchNotice] = useState<string | null>(null);
   const [pendingActionReportId, setPendingActionReportId] = useState<string | null>(null);
   const [pushState, setPushState] = useState<string>("Push: инициализация...");
+  const [previewPhotoUrl, setPreviewPhotoUrl] = useState<string | null>(null);
 
   const dispatchLocalNotification = async (report: ReportRecord, isReassigned: boolean) => {
     try {
@@ -355,12 +358,43 @@ export default function App() {
     }
   };
 
+  const openInMaps = async (report: ReportRecord) => {
+    const label = encodeURIComponent(`Signal ${report.id.slice(0, 8)}`);
+    const androidUrl = `geo:${report.lat},${report.lng}?q=${report.lat},${report.lng}(${label})`;
+    const iosUrl = `http://maps.apple.com/?ll=${report.lat},${report.lng}&q=${label}`;
+    const webUrl = `https://www.google.com/maps/search/?api=1&query=${report.lat},${report.lng}`;
+    const primaryUrl = Platform.OS === "android" ? androidUrl : iosUrl;
+
+    try {
+      const supported = await Linking.canOpenURL(primaryUrl);
+      await Linking.openURL(supported ? primaryUrl : webUrl);
+    } catch {
+      Alert.alert("Maps недостъпно", "Координатите не можаха да бъдат отворени в приложение за карти.");
+    }
+  };
+
   useEffect(() => {
     void refreshReports();
   }, [dispatchNotice]);
 
   return (
     <SafeAreaView style={styles.root}>
+      <Modal
+        visible={previewPhotoUrl !== null}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => setPreviewPhotoUrl(null)}
+      >
+        <View style={styles.previewBackdrop}>
+          <Pressable style={styles.previewClose} onPress={() => setPreviewPhotoUrl(null)}>
+            <Text style={styles.previewCloseText}>Затвори</Text>
+          </Pressable>
+          {previewPhotoUrl ? (
+            <Image source={{ uri: previewPhotoUrl }} style={styles.previewPhoto} resizeMode="contain" />
+          ) : null}
+        </View>
+      </Modal>
+
       <View style={styles.header}>
         <Text style={styles.title}>Patrol Live Feed</Text>
         <Text style={styles.subtitle}>
@@ -376,12 +410,20 @@ export default function App() {
         contentContainerStyle={styles.list}
         renderItem={({ item }) => (
           <View style={styles.card}>
-            <Image source={{ uri: item.photoUrl }} style={styles.photo} />
+            <Pressable onPress={() => setPreviewPhotoUrl(item.photoUrl)}>
+              <Image source={{ uri: item.photoUrl }} style={styles.photo} resizeMode="cover" />
+              <View style={styles.photoHintChip}>
+                <Text style={styles.photoHintChipText}>Отвори снимката</Text>
+              </View>
+            </Pressable>
             <Text style={styles.cardTitle}>Сигнал: {item.id.slice(0, 8)}</Text>
             <Text style={styles.cardText}>Телефон: {item.phone}</Text>
             <Text style={styles.cardText}>
               Координати: {item.lat.toFixed(5)}, {item.lng.toFixed(5)}
             </Text>
+            <Pressable style={styles.mapButton} onPress={() => void openInMaps(item)}>
+              <Text style={styles.mapButtonText}>Отвори пин в Maps</Text>
+            </Pressable>
             <Text style={styles.cardText}>Точност: {Math.round(item.gpsAccuracyM)} м</Text>
             <Text style={styles.cardText}>Статус: {item.status}</Text>
             <Text style={styles.cardText}>
@@ -442,8 +484,37 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     backgroundColor: "#d5dce5"
   },
+  photoHintChip: {
+    position: "absolute",
+    right: 10,
+    bottom: 20,
+    backgroundColor: "rgba(8,18,36,0.82)",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6
+  },
+  photoHintChipText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700"
+  },
   cardTitle: { fontSize: 16, fontWeight: "700", marginBottom: 4 },
   cardText: { fontSize: 14, color: "#334155" },
+  mapButton: {
+    alignSelf: "flex-start",
+    marginTop: 8,
+    marginBottom: 2,
+    backgroundColor: "#e8f0fe",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#bfdbfe",
+    paddingHorizontal: 12,
+    paddingVertical: 9
+  },
+  mapButtonText: {
+    color: "#0b3d91",
+    fontWeight: "700"
+  },
   actions: {
     marginTop: 10,
     flexDirection: "row",
@@ -472,5 +543,30 @@ const styles = StyleSheet.create({
     color: "#64748b",
     marginTop: 40,
     fontSize: 16
+  },
+  previewBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 32
+  },
+  previewPhoto: {
+    width: "100%",
+    height: "82%",
+    backgroundColor: "#111827"
+  },
+  previewClose: {
+    alignSelf: "flex-end",
+    marginBottom: 12,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 9
+  },
+  previewCloseText: {
+    color: "#fff",
+    fontWeight: "700"
   }
 });
