@@ -96,7 +96,24 @@ const broadcast = (type: string, data: unknown) => {
   }
 };
 
-const normalizePhone = (value: string) => value.replace(/[^\d+]/g, "").trim();
+const normalizePhone = (value: string) => {
+  const digits = value.replace(/\D/g, "");
+
+  // Unify BG mobile formats: +35988XXXXXXX, 35988XXXXXXX, 088XXXXXXX, 88XXXXXXX.
+  if (digits.startsWith("359") && digits.length === 12) {
+    return `0${digits.slice(3)}`;
+  }
+
+  if (digits.startsWith("8") && digits.length === 9) {
+    return `0${digits}`;
+  }
+
+  if (digits.startsWith("0") && digits.length === 10) {
+    return digits;
+  }
+
+  return digits;
+};
 
 const toMonthKey = (value: string) => {
   const date = new Date(value);
