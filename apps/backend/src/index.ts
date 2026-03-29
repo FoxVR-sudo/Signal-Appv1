@@ -36,6 +36,23 @@ type PatrolUnit = {
   activeReportId: string | null;
 };
 
+type CitizenHistoryEntry = {
+  id: string;
+  submittedAt: string;
+  status: ReportStatus;
+  assignedUnitId: string | null;
+  verified: boolean;
+  verifiedAt: string | null;
+};
+
+type RewardLeaderboardEntry = {
+  rank: number;
+  phone: string;
+  submittedCount: number;
+  verifiedCount: number;
+  latestSubmittedAt: string;
+};
+
 const app = Fastify({
   logger: true,
   bodyLimit: 10 * 1024 * 1024
@@ -58,6 +75,7 @@ const REPORT_STORE_DIR = path.join(process.cwd(), ".data");
 const REPORT_STORE_PATH = path.join(REPORT_STORE_DIR, "reports.json");
 const PATROL_UNIT_STORE_PATH = path.join(process.cwd(), ".data", "patrol-units.json");
 const PATROL_ACTIVE_WINDOW_MS = 120_000;
+const MONTHLY_REWARD_VERIFIED_TARGET = 3;
 
 const toRadians = (value: number) => (value * Math.PI) / 180;
 
@@ -76,6 +94,86 @@ const broadcast = (type: string, data: unknown) => {
   for (const ws of clients) {
     if (ws.readyState === ws.OPEN) ws.send(message);
   }
+};
+
+const normalizePhone = (value: string) => value.replace(/[^\d+]/g, "").trim();
+
+const toMonthKey = (value: string) => {
+  const date = new Date(value);
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
+};
+
+const isReportVerified = (report: ReportRecord) => Boolean(report.arrivedAt || report.closedAt);
+
+const toCitizenHistoryEntry = (report: ReportRecord): CitizenHistoryEntry => ({
+  id: report.id,
+  submittedAt: report.receivedAtServer,
+  status: report.status,
+  assignedUnitId: report.assignedUnitId,
+  verified: isReportVerified(report),
+  verifiedAt: report.arrivedAt ?? report.closedAt
+});
+
+const buildMonthlyLeaderboard = (monthKey: string, limit?: number) => {
+  const grouped = new Map<string, { submittedCount: number; verifiedCount: number; latestSubmittedAt: string }>();
+
+  for (const report of reports) {
+    if (toMonthKey(report.receivedAtServer) !== monthKey) {
+      continue;
+    }
+
+    const phone = normalizePhone(report.phone);
+    const current = grouped.get(phone) ?? {
+      submittedCount: 0,
+      verifiedCount: 0,
+      latestSubmittedAt: report.receivedAtServer
+    };
+
+    current.submittedCount += 1;
+    if (isReportVerified(report)) {
+      current.verifiedCount += 1;
+    }
+    if (new Date(report.receivedAtServer).getTime() > new Date(current.latestSubmittedAt).getTime()) {
+      current.latestSubmittedAt = report.receivedAtServer;
+    }
+
+    grouped.set(phone, current);
+  }
+
+  return [...grouped.entries()]
+    .map(([phone, stats]) => ({ phone, ...stats }))
+    .sort((left, right) => {
+      if (right.verifiedCount !== left.verifiedCount) {
+        return right.verifiedCount - left.verifiedCount;
+      }
+      if (right.submittedCount !== left.submittedCount) {
+        return right.submittedCount - left.submittedCount;
+      }
+      return new Date(right.latestSubmittedAt).getTime() - new Date(left.latestSubmittedAt).getTime();
+    })
+    .slice(0, limit ?? Number.MAX_SAFE_INTEGER)
+    .map((entry, index) => ({ rank: index + 1, ...entry } satisfies RewardLeaderboardEntry));
+};
+
+const buildCitizenRewardsSummary = (phone: string, monthKey: string) => {
+  const normalizedPhone = normalizePhone(phone);
+  const allByPhone = reports.filter((report) => normalizePhone(report.phone) === normalizedPhone);
+  const monthlyReports = allByPhone.filter((report) => toMonthKey(report.receivedAtServer) === monthKey);
+  const verifiedCount = monthlyReports.filter(isReportVerified).length;
+  const leaderboard = buildMonthlyLeaderboard(monthKey);
+  const leaderboardRank = leaderboard.find((entry) => entry.phone === normalizedPhone)?.rank ?? null;
+
+  return {
+    monthKey,
+    submittedCount: monthlyReports.length,
+    verifiedCount,
+    eligibleForReward: verifiedCount >= MONTHLY_REWARD_VERIFIED_TARGET,
+    targetVerifiedCount: MONTHLY_REWARD_VERIFIED_TARGET,
+    remainingForReward: Math.max(0, MONTHLY_REWARD_VERIFIED_TARGET - verifiedCount),
+    leaderboardRank
+  };
 };
 
 const isExpoPushToken = (token: string) => /^ExponentPushToken\[[\w-]+\]$/.test(token);
@@ -950,7 +1048,7 @@ app.post("/reports", async (request, reply) => {
 
   const report = {
     id: crypto.randomUUID(),
-    phone: parsed.data.phone,
+    phone: normalizePhone(parsed.data.phone),
     photoUrl,
     lat: parsed.data.lat,
     lng: parsed.data.lng,
@@ -1072,6 +1170,141 @@ app.get("/reports/:id", async (request, reply) => {
   }
 
   return report;
+});
+
+app.get("/citizen/history/:phone", async (request) => {
+  const params = z.object({ phone: z.string().min(8) }).parse(request.params);
+  const query = z.object({ month: z.string().regex(/^\d{4}-\d{2}$/).optional() }).parse(request.query ?? {});
+  const phone = normalizePhone(params.phone);
+  const monthKey = query.month ?? toMonthKey(new Date().toISOString());
+
+  const history = reports
+    .filter((report) => normalizePhone(report.phone) === phone)
+    .sort((left, right) => new Date(right.receivedAtServer).getTime() - new Date(left.receivedAtServer).getTime())
+    .slice(0, 25)
+    .map(toCitizenHistoryEntry);
+
+  return {
+    phone,
+    history,
+    rewards: buildCitizenRewardsSummary(phone, monthKey)
+  };
+});
+
+app.get("/monitor/rewards/leaderboard", async (request) => {
+  const query = z
+    .object({
+      month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+      limit: z.coerce.number().min(1).max(100).default(20)
+    })
+    .parse(request.query ?? {});
+
+  const monthKey = query.month ?? toMonthKey(new Date().toISOString());
+  return {
+    monthKey,
+    targetVerifiedCount: MONTHLY_REWARD_VERIFIED_TARGET,
+    leaders: buildMonthlyLeaderboard(monthKey, query.limit)
+  };
+});
+
+app.get("/monitor/rewards", async (_request, reply) => {
+  const html = `<!doctype html>
+<html lang="bg">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Signal Rewards Monitor</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: "Segoe UI", sans-serif;
+        background: linear-gradient(180deg, #f6f8fb 0%, #eef3f9 100%);
+        color: #1f2b38;
+      }
+      main {
+        width: min(980px, 94vw);
+        margin: 24px auto;
+        display: grid;
+        gap: 16px;
+      }
+      .panel {
+        background: rgba(255,255,255,.88);
+        border: 1px solid rgba(31,43,56,.08);
+        border-radius: 18px;
+        padding: 18px;
+      }
+      h1, h2 { margin: 0 0 8px; }
+      .muted { color: #66758a; }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th, td {
+        padding: 12px 10px;
+        border-bottom: 1px solid #e5ebf3;
+        text-align: left;
+      }
+      th { font-size: .82rem; color: #607086; text-transform: uppercase; letter-spacing: .04em; }
+      .rank {
+        display: inline-flex;
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        align-items: center;
+        justify-content: center;
+        background: #0b3d91;
+        color: #fff;
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="panel">
+        <h1>Месечни награди за потвърдени сигнали</h1>
+        <p class="muted">Класацията включва само сигнали, потвърдени от патрул чрез достигане на място или приключване. Цел за награда: <strong>${MONTHLY_REWARD_VERIFIED_TARGET}</strong> потвърдени сигнала за месеца.</p>
+      </section>
+      <section class="panel">
+        <h2 id="month-title">Текущ месец</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Телефон</th>
+              <th>Подадени</th>
+              <th>Потвърдени</th>
+              <th>Последен сигнал</th>
+            </tr>
+          </thead>
+          <tbody id="leaders-body"></tbody>
+        </table>
+      </section>
+    </main>
+    <script>
+      const bodyEl = document.getElementById('leaders-body');
+      const monthTitleEl = document.getElementById('month-title');
+
+      const load = async () => {
+        const response = await fetch('/monitor/rewards/leaderboard');
+        const payload = await response.json();
+        monthTitleEl.textContent = 'Класация за ' + payload.monthKey;
+        bodyEl.innerHTML = payload.leaders.map((entry) => (
+          '<tr>' +
+          '<td><span class="rank">' + entry.rank + '</span></td>' +
+          '<td>' + entry.phone + '</td>' +
+          '<td>' + entry.submittedCount + '</td>' +
+          '<td>' + entry.verifiedCount + '</td>' +
+          '<td>' + new Date(entry.latestSubmittedAt).toLocaleString('bg-BG') + '</td>' +
+          '</tr>'
+        )).join('');
+      };
+
+      void load();
+    </script>
+  </body>
+</html>`;
+
+  return reply.type("text/html; charset=utf-8").send(html);
 });
 
 app.get("/ws/patrol", { websocket: true }, (socket) => {

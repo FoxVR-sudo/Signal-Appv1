@@ -22,7 +22,24 @@ const BACKEND_URL =
 const SAVED_PHONE_KEY = "@signal/citizen-phone";
 const HISTORY_KEY = "@signal/citizen-history";
 
-type HistoryEntry = { id: string; submittedAt: string; status: string };
+type HistoryEntry = {
+  id: string;
+  submittedAt: string;
+  status: string;
+  assignedUnitId: string | null;
+  verified: boolean;
+  verifiedAt: string | null;
+};
+
+type RewardSummary = {
+  monthKey: string;
+  submittedCount: number;
+  verifiedCount: number;
+  eligibleForReward: boolean;
+  targetVerifiedCount: number;
+  remainingForReward: number;
+  leaderboardRank: number | null;
+};
 
 export default function App() {
   const cameraRef = useRef<CameraView | null>(null);
@@ -34,6 +51,9 @@ export default function App() {
   const [lastReportId, setLastReportId] = useState<string | null>(null);
   const [lastReportStatus, setLastReportStatus] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [rewardSummary, setRewardSummary] = useState<RewardSummary | null>(null);
+
+  const normalizePhone = (value: string) => value.replace(/[^\d+]/g, "").trim();
 
   useEffect(() => {
     const loadSavedPhone = async () => {
@@ -52,7 +72,12 @@ export default function App() {
               PermissionsAndroid.PERMISSIONS.READ_PHONE_NUMBERS
             );
             if (granted === PermissionsAndroid.RESULTS.GRANTED) {
-              const devicePhone = await DeviceInfo.getPhoneNumber();
+              const deviceInfoWithPhone = DeviceInfo as typeof DeviceInfo & {
+                getPhoneNumber?: () => Promise<string>;
+              };
+              const devicePhone = deviceInfoWithPhone.getPhoneNumber
+                ? await deviceInfoWithPhone.getPhoneNumber()
+                : "";
               if (devicePhone && devicePhone !== "unknown" && devicePhone.length >= 8) {
                 setPhone(devicePhone);
               }
@@ -78,6 +103,39 @@ export default function App() {
     void loadSavedPhone();
     void loadHistory();
   }, []);
+
+  const syncHistoryFromServer = async (phoneValue: string) => {
+    const normalizedPhone = normalizePhone(phoneValue);
+    if (normalizedPhone.length < 8) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/citizen/history/${encodeURIComponent(normalizedPhone)}`);
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = (await response.json()) as {
+        history: HistoryEntry[];
+        rewards: RewardSummary;
+      };
+
+      setHistory(payload.history);
+      setRewardSummary(payload.rewards);
+      await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(payload.history));
+
+      if (payload.history[0]) {
+        setLastReportId(payload.history[0].id);
+        setLastReportStatus(payload.history[0].status);
+      } else {
+        setLastReportId(null);
+        setLastReportStatus(null);
+      }
+    } catch {
+      // Ignore transient sync errors.
+    }
+  };
 
   const getLocationWithFallback = async () => {
     const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number) => {
@@ -114,7 +172,7 @@ export default function App() {
   };
 
   const openCamera = async () => {
-    if (phone.trim().length < 8) {
+    if (normalizePhone(phone).length < 8) {
       Alert.alert("Липсва телефон", "Въведи валиден телефонен номер.");
       return;
     }
@@ -152,6 +210,7 @@ export default function App() {
 
     setIsSubmitting(true);
     try {
+      const normalizedPhone = normalizePhone(phone);
       const picture = await cameraRef.current.takePictureAsync({
         base64: true,
         quality: 0.7
@@ -176,7 +235,7 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          phone: phone.trim(),
+          phone: normalizedPhone,
           photoBase64: picture.base64,
           lat: location.coords.latitude,
           lng: location.coords.longitude,
@@ -190,12 +249,15 @@ export default function App() {
       }
 
       const payload = (await response.json()) as { id: string };
-      await AsyncStorage.setItem(SAVED_PHONE_KEY, phone.trim());
+      await AsyncStorage.setItem(SAVED_PHONE_KEY, normalizedPhone);
 
       const newEntry: HistoryEntry = {
         id: payload.id,
         submittedAt: new Date().toISOString(),
-        status: "submitted"
+        status: "submitted",
+        assignedUnitId: null,
+        verified: false,
+        verifiedAt: null
       };
       const updatedHistory = [newEntry, ...history].slice(0, 10);
       setHistory(updatedHistory);
@@ -203,6 +265,7 @@ export default function App() {
 
       setLastReportId(payload.id);
       setLastReportStatus("submitted");
+      void syncHistoryFromServer(normalizedPhone);
       Alert.alert("Сигналът е изпратен", `Номер: ${payload.id.slice(0, 8)}`);
       setIsCameraOpen(false);
     } catch (error) {
@@ -214,34 +277,23 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!lastReportId) {
+    if (!isPhoneLoaded) {
       return;
     }
 
-    const timer = setInterval(async () => {
-      try {
-        const response = await fetch(`${BACKEND_URL}/reports/${lastReportId}`);
-        if (!response.ok) {
-          return;
-        }
+    const normalizedPhone = normalizePhone(phone);
+    if (normalizedPhone.length < 8) {
+      setRewardSummary(null);
+      return;
+    }
 
-        const payload = (await response.json()) as { status: string };
-        setLastReportStatus(payload.status);
-
-        setHistory((prev) => {
-          const updated = prev.map((e) =>
-            e.id === lastReportId ? { ...e, status: payload.status } : e
-          );
-          AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(updated)).catch(() => {});
-          return updated;
-        });
-      } catch {
-        // Skip transient network errors.
-      }
-    }, 4000);
+    void syncHistoryFromServer(normalizedPhone);
+    const timer = setInterval(() => {
+      void syncHistoryFromServer(normalizedPhone);
+    }, 15_000);
 
     return () => clearInterval(timer);
-  }, [lastReportId]);
+  }, [phone, isPhoneLoaded]);
 
   if (isCameraOpen) {
     return (
@@ -305,6 +357,28 @@ export default function App() {
           </View>
         ) : null}
 
+        {rewardSummary ? (
+          <View style={styles.rewardBox}>
+            <Text style={styles.rewardTitle}>Месечна гражданска награда</Text>
+            <Text style={styles.rewardText}>Период: {rewardSummary.monthKey}</Text>
+            <Text style={styles.rewardText}>Подадени сигнали: {rewardSummary.submittedCount}</Text>
+            <Text style={styles.rewardText}>
+              Потвърдени от патрул: {rewardSummary.verifiedCount}/{rewardSummary.targetVerifiedCount}
+            </Text>
+            <Text style={styles.rewardText}>
+              {rewardSummary.eligibleForReward
+                ? "Участваш в месечната награда."
+                : `Остават ${rewardSummary.remainingForReward} потвърдени сигнала до участие.`}
+            </Text>
+            <Text style={styles.rewardHint}>
+              В класацията влизат само реални сигнали, потвърдени от патрул на място.
+            </Text>
+            {rewardSummary.leaderboardRank ? (
+              <Text style={styles.rewardRank}>Текущо място: #{rewardSummary.leaderboardRank}</Text>
+            ) : null}
+          </View>
+        ) : null}
+
         {history.length > 0 ? (
           <View style={styles.historySection}>
             <Text style={styles.historyTitle}>История на сигналите</Text>
@@ -320,14 +394,20 @@ export default function App() {
                       minute: "2-digit"
                     })}
                   </Text>
+                  <Text style={styles.historyMeta}>
+                    {entry.verified
+                      ? `Потвърден: ${entry.verifiedAt ? new Date(entry.verifiedAt).toLocaleString("bg-BG") : "да"}`
+                      : `Патрул: ${entry.assignedUnitId ?? "в изчакване"}`}
+                  </Text>
                 </View>
                 <Text
                   style={[
                     styles.historyStatus,
+                    entry.verified && styles.historyStatusVerified,
                     entry.status === "closed" && styles.historyStatusClosed
                   ]}
                   >
-                    {translateStatus(entry.status)}
+                    {entry.verified ? "Потвърден" : translateStatus(entry.status)}
                   </Text>
                 </View>
             ))}
@@ -392,6 +472,38 @@ const styles = StyleSheet.create({
   statusText: {
     fontSize: 14,
     color: "#334155"
+  },
+  rewardBox: {
+    width: "100%",
+    maxWidth: 320,
+    marginTop: 18,
+    borderRadius: 14,
+    padding: 14,
+    backgroundColor: "#fdf7e7",
+    borderWidth: 1,
+    borderColor: "#efd38a",
+    gap: 4
+  },
+  rewardTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#7c4a03"
+  },
+  rewardText: {
+    fontSize: 14,
+    color: "#6b4f1d"
+  },
+  rewardHint: {
+    marginTop: 4,
+    fontSize: 12,
+    lineHeight: 18,
+    color: "#8b6b2b"
+  },
+  rewardRank: {
+    marginTop: 4,
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#7c4a03"
   },
   cameraRoot: { flex: 1, backgroundColor: "#000" },
   cameraView: { flex: 1 },
@@ -491,6 +603,8 @@ const styles = StyleSheet.create({
   historyLeft: { gap: 2 },
   historyId: { fontSize: 14, fontWeight: "700", color: "#0b3d91" },
   historyDate: { fontSize: 12, color: "#64748b" },
+  historyMeta: { fontSize: 12, color: "#64748b", maxWidth: 190 },
   historyStatus: { fontSize: 13, fontWeight: "600", color: "#0b3d91" },
+  historyStatusVerified: { color: "#0f766e" },
   historyStatusClosed: { color: "#64748b" }
 });
