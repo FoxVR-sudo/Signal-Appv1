@@ -41,6 +41,13 @@ type RewardSummary = {
   leaderboardRank: number | null;
 };
 
+type TopLeaderEntry = {
+  rank: number;
+  phoneMasked: string;
+  verifiedCount: number;
+  submittedCount: number;
+};
+
 export default function App() {
   const cameraRef = useRef<CameraView | null>(null);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
@@ -52,6 +59,9 @@ export default function App() {
   const [lastReportStatus, setLastReportStatus] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [rewardSummary, setRewardSummary] = useState<RewardSummary | null>(null);
+  const [topLeaders, setTopLeaders] = useState<TopLeaderEntry[]>([]);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState<string | null>(null);
 
   const normalizePhone = (value: string) => value.replace(/[^\d+]/g, "").trim();
 
@@ -107,22 +117,30 @@ export default function App() {
   const syncHistoryFromServer = async (phoneValue: string) => {
     const normalizedPhone = normalizePhone(phoneValue);
     if (normalizedPhone.length < 8) {
+      setRewardSummary(null);
+      setTopLeaders([]);
+      setStatsError("Въведи валиден телефонен номер за статистика.");
       return;
     }
 
+    setStatsLoading(true);
+    setStatsError(null);
     try {
       const response = await fetch(`${BACKEND_URL}/citizen/history/${encodeURIComponent(normalizedPhone)}`);
       if (!response.ok) {
+        setStatsError(`Статистиката е недостъпна (${response.status}).`);
         return;
       }
 
       const payload = (await response.json()) as {
         history: HistoryEntry[];
         rewards: RewardSummary;
+        topLeaders: TopLeaderEntry[];
       };
 
       setHistory(payload.history);
       setRewardSummary(payload.rewards);
+      setTopLeaders(Array.isArray(payload.topLeaders) ? payload.topLeaders : []);
       await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(payload.history));
 
       if (payload.history[0]) {
@@ -133,7 +151,9 @@ export default function App() {
         setLastReportStatus(null);
       }
     } catch {
-      // Ignore transient sync errors.
+      setStatsError("Неуспешна връзка със сървъра за статистика.");
+    } finally {
+      setStatsLoading(false);
     }
   };
 
@@ -357,27 +377,50 @@ export default function App() {
           </View>
         ) : null}
 
-        {rewardSummary ? (
-          <View style={styles.rewardBox}>
-            <Text style={styles.rewardTitle}>Месечна гражданска награда</Text>
-            <Text style={styles.rewardText}>Период: {rewardSummary.monthKey}</Text>
-            <Text style={styles.rewardText}>Подадени сигнали: {rewardSummary.submittedCount}</Text>
-            <Text style={styles.rewardText}>
-              Потвърдени от патрул: {rewardSummary.verifiedCount}/{rewardSummary.targetVerifiedCount}
-            </Text>
-            <Text style={styles.rewardText}>
-              {rewardSummary.eligibleForReward
-                ? "Участваш в месечната награда."
-                : `Остават ${rewardSummary.remainingForReward} потвърдени сигнала до участие.`}
-            </Text>
-            <Text style={styles.rewardHint}>
-              В класацията влизат само реални сигнали, потвърдени от патрул на място.
-            </Text>
-            {rewardSummary.leaderboardRank ? (
-              <Text style={styles.rewardRank}>Текущо място: #{rewardSummary.leaderboardRank}</Text>
-            ) : null}
-          </View>
-        ) : null}
+        <View style={styles.rewardBox}>
+          <Text style={styles.rewardTitle}>Граждански рейтинг и награди</Text>
+          {statsLoading ? <Text style={styles.rewardText}>Зареждане на статистика...</Text> : null}
+          {statsError ? <Text style={styles.rewardError}>{statsError}</Text> : null}
+
+          {rewardSummary ? (
+            <>
+              <Text style={styles.rewardText}>Период: {rewardSummary.monthKey}</Text>
+              <Text style={styles.rewardText}>Подадени сигнали: {rewardSummary.submittedCount}</Text>
+              <Text style={styles.rewardText}>
+                Потвърдени от патрул: {rewardSummary.verifiedCount}/{rewardSummary.targetVerifiedCount}
+              </Text>
+              <Text style={styles.rewardText}>
+                {rewardSummary.eligibleForReward
+                  ? "Участваш в месечната награда."
+                  : `Остават ${rewardSummary.remainingForReward} потвърдени сигнала до участие.`}
+              </Text>
+              <Text style={styles.rewardHint}>
+                В класацията влизат само реални сигнали, потвърдени от патрул на място.
+              </Text>
+              {rewardSummary.leaderboardRank ? (
+                <Text style={styles.rewardRank}>Текущо място: #{rewardSummary.leaderboardRank}</Text>
+              ) : (
+                <Text style={styles.rewardRank}>Все още няма място в класацията за този месец.</Text>
+              )}
+            </>
+          ) : (
+            <Text style={styles.rewardText}>Няма налична статистика за този номер.</Text>
+          )}
+
+          {topLeaders.length > 0 ? (
+            <View style={styles.leaderboardBox}>
+              <Text style={styles.leaderboardTitle}>Топ граждани за месеца</Text>
+              {topLeaders.map((entry) => (
+                <View key={`${entry.rank}-${entry.phoneMasked}`} style={styles.leaderboardRow}>
+                  <Text style={styles.leaderboardCell}>#{entry.rank}</Text>
+                  <Text style={styles.leaderboardCellWide}>{entry.phoneMasked}</Text>
+                  <Text style={styles.leaderboardCell}>✅ {entry.verifiedCount}</Text>
+                  <Text style={styles.leaderboardCell}>📨 {entry.submittedCount}</Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+        </View>
 
         {history.length > 0 ? (
           <View style={styles.historySection}>
@@ -493,6 +536,14 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#6b4f1d"
   },
+  rewardError: {
+    fontSize: 13,
+    color: "#b91c1c",
+    backgroundColor: "#fee2e2",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6
+  },
   rewardHint: {
     marginTop: 4,
     fontSize: 12,
@@ -504,6 +555,33 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     color: "#7c4a03"
+  },
+  leaderboardBox: {
+    marginTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#e8d7aa",
+    paddingTop: 8,
+    gap: 6
+  },
+  leaderboardTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#7c4a03"
+  },
+  leaderboardRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between"
+  },
+  leaderboardCell: {
+    fontSize: 12,
+    color: "#6b4f1d"
+  },
+  leaderboardCellWide: {
+    flex: 1,
+    marginLeft: 8,
+    fontSize: 12,
+    color: "#6b4f1d"
   },
   cameraRoot: { flex: 1, backgroundColor: "#000" },
   cameraView: { flex: 1 },

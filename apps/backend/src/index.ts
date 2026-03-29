@@ -176,6 +176,15 @@ const buildCitizenRewardsSummary = (phone: string, monthKey: string) => {
   };
 };
 
+const maskPhone = (phone: string) => {
+  if (phone.length <= 4) {
+    return phone;
+  }
+  const visiblePrefix = phone.slice(0, 3);
+  const visibleSuffix = phone.slice(-2);
+  return `${visiblePrefix}${"*".repeat(Math.max(2, phone.length - 5))}${visibleSuffix}`;
+};
+
 const requeueReportsAssignedToInvalidUnits = () => {
   let changed = false;
 
@@ -1308,7 +1317,13 @@ app.get("/citizen/history/:phone", async (request) => {
   return {
     phone,
     history,
-    rewards: buildCitizenRewardsSummary(phone, monthKey)
+    rewards: buildCitizenRewardsSummary(phone, monthKey),
+    topLeaders: buildMonthlyLeaderboard(monthKey, 5).map((entry) => ({
+      rank: entry.rank,
+      phoneMasked: maskPhone(entry.phone),
+      verifiedCount: entry.verifiedCount,
+      submittedCount: entry.submittedCount
+    }))
   };
 });
 
