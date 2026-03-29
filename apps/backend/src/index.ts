@@ -176,6 +176,106 @@ const buildCitizenRewardsSummary = (phone: string, monthKey: string) => {
   };
 };
 
+const requeueReportsAssignedToInvalidUnits = () => {
+  let changed = false;
+
+  for (const report of reports) {
+    if (!report.assignedUnitId || report.status === "closed") {
+      continue;
+    }
+
+    const assignedUnit = getPatrolUnitById(report.assignedUnitId);
+    if (assignedUnit && isUnitReachable(report.assignedUnitId) && isUnitActiveRecently(assignedUnit)) {
+      continue;
+    }
+
+    clearReassignmentTimer(report.id);
+    report.assignedUnitId = null;
+    report.status = "submitted";
+    changed = true;
+  }
+
+  return changed;
+};
+
+const detachTokenFromOtherUnits = async (token: string, keepUnitId: string) => {
+  let changed = false;
+  const emptiedUnitIds = new Set<string>();
+
+  for (const [unitId, tokens] of patrolPushTokens.entries()) {
+    if (unitId === keepUnitId) {
+      continue;
+    }
+
+    if (tokens.delete(token)) {
+      changed = true;
+      if (tokens.size === 0) {
+        patrolPushTokens.delete(unitId);
+        emptiedUnitIds.add(unitId);
+      }
+    }
+  }
+
+  if (!changed) {
+    return false;
+  }
+
+  for (let index = patrolUnits.length - 1; index >= 0; index -= 1) {
+    const unit = patrolUnits[index];
+    if (unit.id === keepUnitId) {
+      continue;
+    }
+    if (emptiedUnitIds.has(unit.id) && !unit.activeReportId) {
+      patrolUnits.splice(index, 1);
+    }
+  }
+
+  await persistPatrolPushTokens();
+  await persistPatrolUnits();
+  return true;
+};
+
+const assignPendingReports = async () => {
+  let changed = false;
+
+  for (const report of reports) {
+    if (report.status !== "submitted" || report.assignedUnitId) {
+      continue;
+    }
+
+    const assignedUnit = assignNearestPatrol(report);
+    if (!assignedUnit) {
+      continue;
+    }
+
+    broadcast("report_assigned", {
+      reportId: report.id,
+      unitId: assignedUnit.id,
+      unitLabel: assignedUnit.label
+    });
+    void sendPushToUnit(
+      assignedUnit.id,
+      "Нов сигнал",
+      `Тел: ${report.phone} | ${report.lat.toFixed(4)}, ${report.lng.toFixed(4)}`,
+      {
+        reportId: report.id,
+        event: "report_assigned",
+        phone: report.phone,
+        lat: String(report.lat),
+        lng: String(report.lng)
+      }
+    );
+    scheduleReassignment(report.id);
+    changed = true;
+  }
+
+  if (changed) {
+    await persistReports();
+  }
+
+  return changed;
+};
+
 const isExpoPushToken = (token: string) => /^ExponentPushToken\[[\w-]+\]$/.test(token);
 
 const loadPatrolPushTokens = async () => {
@@ -903,10 +1003,17 @@ app.post("/patrol/register", async (request, reply) => {
     lng: body.lng
   });
 
+  let reportStateChanged = false;
+
   if (body.token) {
     if (!isExpoPushToken(body.token)) {
       return reply.code(400).send({ error: "Invalid Expo push token" });
     }
+
+    if (await detachTokenFromOtherUnits(body.token, unit.id)) {
+      reportStateChanged = requeueReportsAssignedToInvalidUnits() || reportStateChanged;
+    }
+
     const unitTokens = patrolPushTokens.get(unit.id) ?? new Set<string>();
     unitTokens.add(body.token);
     patrolPushTokens.set(unit.id, unitTokens);
@@ -914,6 +1021,10 @@ app.post("/patrol/register", async (request, reply) => {
   }
 
   await persistPatrolUnits();
+  reportStateChanged = (await assignPendingReports()) || reportStateChanged;
+  if (reportStateChanged) {
+    await persistReports();
+  }
   broadcastPatrolUnitsUpdated();
   return {
     ok: true,
@@ -960,6 +1071,12 @@ app.post("/patrol/units/:unitId/push-token", async (request, reply) => {
   }
 
   const unitTokens = patrolPushTokens.get(params.unitId) ?? new Set<string>();
+  let reportStateChanged = false;
+
+  if (await detachTokenFromOtherUnits(body.token, params.unitId)) {
+    reportStateChanged = requeueReportsAssignedToInvalidUnits() || reportStateChanged;
+  }
+
   unitTokens.add(body.token);
   patrolPushTokens.set(params.unitId, unitTokens);
 
@@ -980,6 +1097,10 @@ app.post("/patrol/units/:unitId/push-token", async (request, reply) => {
   }
 
   await persistPatrolPushTokens();
+  reportStateChanged = (await assignPendingReports()) || reportStateChanged;
+  if (reportStateChanged) {
+    await persistReports();
+  }
   broadcastPatrolUnitsUpdated();
 
   return { ok: true, count: unitTokens.size };
