@@ -106,6 +106,8 @@ const toMonthKey = (value: string) => {
 };
 
 const isReportVerified = (report: ReportRecord) => Boolean(report.arrivedAt || report.closedAt);
+const isReportAccepted = (report: ReportRecord) =>
+  Boolean(report.acceptedAt || report.arrivedAt || report.closedAt);
 
 const toCitizenHistoryEntry = (report: ReportRecord): CitizenHistoryEntry => ({
   id: report.id,
@@ -162,12 +164,43 @@ const buildCitizenRewardsSummary = (phone: string, monthKey: string) => {
   const allByPhone = reports.filter((report) => normalizePhone(report.phone) === normalizedPhone);
   const monthlyReports = allByPhone.filter((report) => toMonthKey(report.receivedAtServer) === monthKey);
   const verifiedCount = monthlyReports.filter(isReportVerified).length;
+  const acceptedCount = monthlyReports.filter(isReportAccepted).length;
   const leaderboard = buildMonthlyLeaderboard(monthKey);
   const leaderboardRank = leaderboard.find((entry) => entry.phone === normalizedPhone)?.rank ?? null;
+  const participantCount = leaderboard.length;
+
+  const monthlyParticipantStats = leaderboard.map((entry) => {
+    const participantReports = reports.filter(
+      (report) => normalizePhone(report.phone) === entry.phone && toMonthKey(report.receivedAtServer) === monthKey
+    );
+    return {
+      submittedCount: participantReports.length,
+      acceptedCount: participantReports.filter(isReportAccepted).length
+    };
+  });
+
+  const averageSubmittedCount =
+    monthlyParticipantStats.length > 0
+      ? monthlyParticipantStats.reduce((sum, item) => sum + item.submittedCount, 0) /
+        monthlyParticipantStats.length
+      : 0;
+
+  const averageAcceptedCount =
+    monthlyParticipantStats.length > 0
+      ? monthlyParticipantStats.reduce((sum, item) => sum + item.acceptedCount, 0) /
+        monthlyParticipantStats.length
+      : 0;
+
+  const acceptanceRate = monthlyReports.length ? acceptedCount / monthlyReports.length : 0;
 
   return {
     monthKey,
     submittedCount: monthlyReports.length,
+    acceptedCount,
+    acceptanceRate,
+    participantCount,
+    averageSubmittedCount,
+    averageAcceptedCount,
     verifiedCount,
     eligibleForReward: verifiedCount >= MONTHLY_REWARD_VERIFIED_TARGET,
     targetVerifiedCount: MONTHLY_REWARD_VERIFIED_TARGET,

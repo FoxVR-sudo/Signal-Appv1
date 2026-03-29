@@ -34,18 +34,16 @@ type HistoryEntry = {
 type RewardSummary = {
   monthKey: string;
   submittedCount: number;
+  acceptedCount: number;
+  acceptanceRate: number;
+  participantCount: number;
+  averageSubmittedCount: number;
+  averageAcceptedCount: number;
   verifiedCount: number;
   eligibleForReward: boolean;
   targetVerifiedCount: number;
   remainingForReward: number;
   leaderboardRank: number | null;
-};
-
-type TopLeaderEntry = {
-  rank: number;
-  phoneMasked: string;
-  verifiedCount: number;
-  submittedCount: number;
 };
 
 export default function App() {
@@ -59,7 +57,6 @@ export default function App() {
   const [lastReportStatus, setLastReportStatus] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [rewardSummary, setRewardSummary] = useState<RewardSummary | null>(null);
-  const [topLeaders, setTopLeaders] = useState<TopLeaderEntry[]>([]);
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState<string | null>(null);
 
@@ -118,7 +115,6 @@ export default function App() {
     const normalizedPhone = normalizePhone(phoneValue);
     if (normalizedPhone.length < 8) {
       setRewardSummary(null);
-      setTopLeaders([]);
       setStatsError("Въведи валиден телефонен номер за статистика.");
       return;
     }
@@ -135,12 +131,10 @@ export default function App() {
       const payload = (await response.json()) as {
         history: HistoryEntry[];
         rewards: RewardSummary;
-        topLeaders: TopLeaderEntry[];
       };
 
       setHistory(payload.history);
       setRewardSummary(payload.rewards);
-      setTopLeaders(Array.isArray(payload.topLeaders) ? payload.topLeaders : []);
       await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(payload.history));
 
       if (payload.history[0]) {
@@ -378,48 +372,30 @@ export default function App() {
         ) : null}
 
         <View style={styles.rewardBox}>
-          <Text style={styles.rewardTitle}>Граждански рейтинг и награди</Text>
-          {statsLoading ? <Text style={styles.rewardText}>Зареждане на статистика...</Text> : null}
+          <Text style={styles.rewardTitle}>Твоят рейтинг</Text>
+          {statsLoading ? <Text style={styles.rewardText}>Зареждане на рейтинг...</Text> : null}
           {statsError ? <Text style={styles.rewardError}>{statsError}</Text> : null}
 
           {rewardSummary ? (
             <>
-              <Text style={styles.rewardText}>Период: {rewardSummary.monthKey}</Text>
-              <Text style={styles.rewardText}>Подадени сигнали: {rewardSummary.submittedCount}</Text>
-              <Text style={styles.rewardText}>
-                Потвърдени от патрул: {rewardSummary.verifiedCount}/{rewardSummary.targetVerifiedCount}
+              <Text style={styles.ratingMain}>
+                {rewardSummary.leaderboardRank
+                  ? `#${rewardSummary.leaderboardRank} от ${rewardSummary.participantCount}`
+                  : `Без класиране (${rewardSummary.participantCount} участника)`}
               </Text>
+              <Text style={styles.rewardText}>Месец: {rewardSummary.monthKey}</Text>
+              <Text style={styles.rewardText}>Изпратени сигнали: {rewardSummary.submittedCount}</Text>
+              <Text style={styles.rewardText}>Приети от патрул: {rewardSummary.acceptedCount}</Text>
               <Text style={styles.rewardText}>
-                {rewardSummary.eligibleForReward
-                  ? "Участваш в месечната награда."
-                  : `Остават ${rewardSummary.remainingForReward} потвърдени сигнала до участие.`}
+                Процент приети: {(rewardSummary.acceptanceRate * 100).toFixed(0)}%
               </Text>
               <Text style={styles.rewardHint}>
-                В класацията влизат само реални сигнали, потвърдени от патрул на място.
+                Средно за гражданин: {rewardSummary.averageSubmittedCount.toFixed(1)} изпратени / {rewardSummary.averageAcceptedCount.toFixed(1)} приети
               </Text>
-              {rewardSummary.leaderboardRank ? (
-                <Text style={styles.rewardRank}>Текущо място: #{rewardSummary.leaderboardRank}</Text>
-              ) : (
-                <Text style={styles.rewardRank}>Все още няма място в класацията за този месец.</Text>
-              )}
             </>
           ) : (
             <Text style={styles.rewardText}>Няма налична статистика за този номер.</Text>
           )}
-
-          {topLeaders.length > 0 ? (
-            <View style={styles.leaderboardBox}>
-              <Text style={styles.leaderboardTitle}>Топ граждани за месеца</Text>
-              {topLeaders.map((entry) => (
-                <View key={`${entry.rank}-${entry.phoneMasked}`} style={styles.leaderboardRow}>
-                  <Text style={styles.leaderboardCell}>#{entry.rank}</Text>
-                  <Text style={styles.leaderboardCellWide}>{entry.phoneMasked}</Text>
-                  <Text style={styles.leaderboardCell}>✅ {entry.verifiedCount}</Text>
-                  <Text style={styles.leaderboardCell}>📨 {entry.submittedCount}</Text>
-                </View>
-              ))}
-            </View>
-          ) : null}
         </View>
 
         {history.length > 0 ? (
@@ -532,6 +508,13 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#7c4a03"
   },
+  ratingMain: {
+    marginTop: 6,
+    marginBottom: 2,
+    fontSize: 30,
+    fontWeight: "900",
+    color: "#7c4a03"
+  },
   rewardText: {
     fontSize: 14,
     color: "#6b4f1d"
@@ -555,33 +538,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     color: "#7c4a03"
-  },
-  leaderboardBox: {
-    marginTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: "#e8d7aa",
-    paddingTop: 8,
-    gap: 6
-  },
-  leaderboardTitle: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#7c4a03"
-  },
-  leaderboardRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between"
-  },
-  leaderboardCell: {
-    fontSize: 12,
-    color: "#6b4f1d"
-  },
-  leaderboardCellWide: {
-    flex: 1,
-    marginLeft: 8,
-    fontSize: 12,
-    color: "#6b4f1d"
   },
   cameraRoot: { flex: 1, backgroundColor: "#000" },
   cameraView: { flex: 1 },
