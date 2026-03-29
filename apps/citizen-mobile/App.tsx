@@ -16,7 +16,6 @@ import {
   View
 } from "react-native";
 import DeviceInfo from "react-native-device-info";
-
 const BACKEND_URL =
   process.env.EXPO_PUBLIC_BACKEND_URL ??
   "https://signal-backend-8pyp.onrender.com";
@@ -248,6 +247,9 @@ export default function App() {
     return (
       <SafeAreaView style={styles.cameraRoot}>
         <CameraView ref={cameraRef} style={styles.cameraView} facing="back" />
+        <View style={styles.cameraHintBar}>
+          <Text style={styles.cameraHintText}>Уверете се, че нарушението е изцяло в кадъра</Text>
+        </View>
         <View style={styles.cameraOverlay}>
           <Pressable style={styles.cancelButton} onPress={() => setIsCameraOpen(false)}>
             <Text style={styles.cancelButtonText}>Отказ</Text>
@@ -273,6 +275,13 @@ export default function App() {
     <SafeAreaView style={styles.root}>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Signal Citizen</Text>
+
+
+        <View style={styles.hintBox}>
+          <Text style={styles.hintText}>
+            Преди да изпратите сигнал, уверете се, че нарушението е ясно видимо и изцяло в кадъра на снимката. Снимайте при добра осветеност.
+          </Text>
+        </View>
 
         <TextInput
           value={phone}
@@ -317,10 +326,10 @@ export default function App() {
                     styles.historyStatus,
                     entry.status === "closed" && styles.historyStatusClosed
                   ]}
-                >
-                  {translateStatus(entry.status)}
-                </Text>
-              </View>
+                  >
+                    {translateStatus(entry.status)}
+                  </Text>
+                </View>
             ))}
           </View>
         ) : null}
@@ -396,6 +405,39 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center"
   },
+    cameraHintBar: {
+      position: "absolute",
+      top: 0,
+      left: 0,
+      right: 0,
+      paddingTop: 48,
+      paddingBottom: 12,
+      paddingHorizontal: 16,
+      backgroundColor: "rgba(0,0,0,0.55)",
+      alignItems: "center",
+    },
+    cameraHintText: {
+      color: "#fff",
+      fontSize: 13,
+      fontWeight: "600",
+      textAlign: "center",
+      letterSpacing: 0.2,
+    },
+    hintBox: {
+      width: "100%",
+      maxWidth: 320,
+      backgroundColor: "#e8f0fe",
+      borderRadius: 12,
+      padding: 12,
+      marginBottom: 16,
+      borderLeftWidth: 3,
+      borderLeftColor: "#0b3d91",
+    },
+    hintText: {
+      fontSize: 13,
+      color: "#1a3a6b",
+      lineHeight: 19,
+    },
   cancelButton: {
     backgroundColor: "rgba(255,255,255,0.2)",
     paddingHorizontal: 18,
