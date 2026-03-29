@@ -409,6 +409,25 @@ export default function App() {
     return [] as const;
   };
 
+  const getColleagueStatusLabel = (report: ReportRecord) => {
+    if (!report.assignedUnitId || report.assignedUnitId === UNIT_ID) {
+      return null;
+    }
+
+    switch (report.status) {
+      case "assigned":
+        return `Разпределен към ${report.assignedUnitId}`;
+      case "accepted":
+        return `Приет от ${report.assignedUnitId}`;
+      case "on_site":
+        return `${report.assignedUnitId} е на място`;
+      case "closed":
+        return `Приключен от ${report.assignedUnitId}`;
+      default:
+        return `Обработва се от ${report.assignedUnitId}`;
+    }
+  };
+
   const refreshReports = async () => {
     try {
       const response = await fetch(`${API_BASE}/patrol/incidents/live`);
@@ -497,11 +516,16 @@ export default function App() {
         contentContainerStyle={styles.list}
         renderItem={({ item }) => (
           <View style={styles.card}>
+            {getColleagueStatusLabel(item) ? (
+              <View style={styles.colleagueStateRow}>
+                <Text style={styles.colleagueStateText}>{getColleagueStatusLabel(item)}</Text>
+              </View>
+            ) : null}
             <View style={styles.cardTopRow}>
               <Text style={styles.cardTitle}>Сигнал: {item.id.slice(0, 8)}</Text>
-              {item.assignedUnitId && item.assignedUnitId !== UNIT_ID ? (
+              {item.assignedUnitId && item.assignedUnitId !== UNIT_ID && item.status !== "closed" ? (
                 <View style={styles.colleagueBadge}>
-                  <Text style={styles.colleagueBadgeText}>Поет от колега</Text>
+                  <Text style={styles.colleagueBadgeText}>Колега</Text>
                 </View>
               ) : null}
             </View>
@@ -608,6 +632,21 @@ const styles = StyleSheet.create({
     padding: 12,
     borderWidth: 1,
     borderColor: "#d6dee8"
+  },
+  colleagueStateRow: {
+    marginBottom: 8,
+    alignSelf: "flex-start",
+    backgroundColor: "#eff6ff",
+    borderWidth: 1,
+    borderColor: "#93c5fd",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6
+  },
+  colleagueStateText: {
+    color: "#1d4ed8",
+    fontSize: 12,
+    fontWeight: "700"
   },
   cardTopRow: {
     flexDirection: "row",
