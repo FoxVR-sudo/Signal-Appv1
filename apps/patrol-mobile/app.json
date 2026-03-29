@@ -7,8 +7,12 @@
     "platforms": [
       "android"
     ],
+    "plugins": [
+      "expo-notifications"
+    ],
     "android": {
-      "package": "bg.signal.patrol"
+      "package": "bg.signal.patrol",
+      "googleServicesFile": "./google-services.json"
     },
     "extra": {
       "eas": {
