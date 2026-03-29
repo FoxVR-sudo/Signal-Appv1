@@ -93,6 +93,7 @@ const loadPatrolPushTokens = async () => {
     }
 
     app.log.info({ units: patrolPushTokens.size }, "Loaded patrol push token store");
+    broadcastPatrolUnitsUpdated();
   } catch {
     app.log.info("No persisted patrol push token store found");
   }
@@ -131,6 +132,7 @@ const loadPatrolUnits = async () => {
 
     patrolUnits.splice(0, patrolUnits.length, ...parsed);
     app.log.info({ count: patrolUnits.length }, "Loaded patrol units store");
+    broadcastPatrolUnitsUpdated();
   } catch {
     app.log.info("No persisted patrol units store found");
   }
@@ -194,6 +196,18 @@ const isUnitActiveRecently = (unit: PatrolUnit) => {
 
 const isUnitAssignable = (unit: PatrolUnit) => {
   return unit.isAvailable && isUnitReachable(unit.id) && isUnitActiveRecently(unit);
+};
+
+const getPatrolUnitsSnapshot = () =>
+  patrolUnits.map((unit) => ({
+    ...unit,
+    reachable: isUnitReachable(unit.id),
+    active: isUnitActiveRecently(unit),
+    assignable: isUnitAssignable(unit)
+  }));
+
+const broadcastPatrolUnitsUpdated = () => {
+  broadcast("patrol_units_updated", getPatrolUnitsSnapshot());
 };
 
 const loadReports = async () => {
@@ -330,6 +344,7 @@ const scheduleReassignment = (reportId: string) => {
       currentUnit.isAvailable = true;
       currentUnit.activeReportId = null;
       void persistPatrolUnits();
+      broadcastPatrolUnitsUpdated();
     }
 
     const reassignedUnit = assignNearestPatrol(report);
@@ -385,11 +400,287 @@ const assignNearestPatrol = (report: ReportRecord) => {
   report.status = "assigned";
   report.assignmentAttempts.push(candidate.unit.id);
   void persistPatrolUnits();
+  broadcastPatrolUnitsUpdated();
 
   return candidate.unit;
 };
 
 app.get("/health", async () => ({ ok: true }));
+
+app.get("/monitor/patrol", async (_request, reply) => {
+  const html = `<!doctype html>
+<html lang="bg">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Signal Patrol Live Map</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <style>
+      :root {
+        --bg: #f5f1e9;
+        --panel: rgba(255, 255, 255, 0.82);
+        --ink: #1f2b38;
+        --muted: #5f6f81;
+        --ok: #11823b;
+        --busy: #c57606;
+        --off: #9aa7b5;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Manrope", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 15% 12%, #d0ecff 0%, transparent 38%),
+          radial-gradient(circle at 85% 18%, #ffe4c6 0%, transparent 34%),
+          linear-gradient(160deg, #f9f7f2 0%, #edf3fb 100%);
+      }
+      .shell {
+        width: min(1120px, 96vw);
+        margin: 20px auto;
+        display: grid;
+        gap: 14px;
+      }
+      .hero {
+        background: var(--panel);
+        border: 1px solid rgba(31, 43, 56, 0.08);
+        backdrop-filter: blur(8px);
+        border-radius: 18px;
+        padding: 14px 18px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .title {
+        margin: 0;
+        font-size: clamp(1.1rem, 2.7vw, 1.9rem);
+        letter-spacing: 0.02em;
+      }
+      .meta {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      .chips {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .chip {
+        border-radius: 999px;
+        padding: 6px 11px;
+        font-size: 0.82rem;
+        font-weight: 700;
+        border: 1px solid rgba(31, 43, 56, 0.15);
+        background: #fff;
+      }
+      .ok { color: var(--ok); }
+      .busy { color: var(--busy); }
+      .off { color: var(--off); }
+      .map-wrap {
+        overflow: hidden;
+        border-radius: 18px;
+        border: 1px solid rgba(31, 43, 56, 0.1);
+        background: #e8eef5;
+      }
+      #map {
+        width: 100%;
+        height: min(74vh, 760px);
+      }
+      .list {
+        background: var(--panel);
+        border: 1px solid rgba(31, 43, 56, 0.08);
+        backdrop-filter: blur(8px);
+        border-radius: 18px;
+        padding: 10px;
+        display: grid;
+        gap: 8px;
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border: 1px solid rgba(31, 43, 56, 0.12);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.88);
+        padding: 10px 12px;
+      }
+      .row strong { font-size: 0.96rem; }
+      .small { font-size: 0.84rem; color: var(--muted); }
+      @media (max-width: 760px) {
+        .hero { flex-direction: column; align-items: flex-start; gap: 8px; }
+        #map { height: 56vh; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <h1 class="title">Signal Patrol Live Map</h1>
+          <div class="meta" id="last-update">Чакаме първи данни...</div>
+        </div>
+        <div class="chips">
+          <span class="chip ok" id="count-available">Свободни: 0</span>
+          <span class="chip busy" id="count-busy">Заети: 0</span>
+          <span class="chip off" id="count-offline">Офлайн: 0</span>
+        </div>
+      </section>
+      <section class="map-wrap"><div id="map"></div></section>
+      <section class="list" id="units-list"></section>
+    </main>
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script>
+      const map = L.map("map", { zoomControl: true }).setView([42.6977, 23.3219], 12);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "&copy; OpenStreetMap contributors"
+      }).addTo(map);
+
+      const markers = new Map();
+      const lastUpdateEl = document.getElementById("last-update");
+      const listEl = document.getElementById("units-list");
+      const countAvailableEl = document.getElementById("count-available");
+      const countBusyEl = document.getElementById("count-busy");
+      const countOfflineEl = document.getElementById("count-offline");
+
+      const statusText = (unit) => {
+        if (!unit.active || !unit.reachable) return "offline";
+        return unit.isAvailable ? "available" : "busy";
+      };
+
+      const markerColor = (unit) => {
+        const status = statusText(unit);
+        if (status === "available") return "#11823b";
+        if (status === "busy") return "#c57606";
+        return "#8a98a6";
+      };
+
+      const iconHtml = (color) =>
+        '<span style="display:inline-block;width:18px;height:18px;border-radius:50%;background:' +
+        color +
+        ';border:2px solid white;box-shadow:0 2px 8px rgba(0,0,0,.25)"></span>';
+
+      const renderUnits = (units) => {
+        const normalized = Array.isArray(units) ? units : [];
+        const seenIds = new Set(normalized.map((unit) => unit.id));
+
+        for (const [unitId, marker] of markers.entries()) {
+          if (!seenIds.has(unitId)) {
+            map.removeLayer(marker);
+            markers.delete(unitId);
+          }
+        }
+
+        const bounds = [];
+        let available = 0;
+        let busy = 0;
+        let offline = 0;
+
+        normalized.forEach((unit) => {
+          const status = statusText(unit);
+          if (status === "available") available += 1;
+          else if (status === "busy") busy += 1;
+          else offline += 1;
+
+          const ll = [unit.lat, unit.lng];
+          bounds.push(ll);
+
+          const popup =
+            '<strong>' + unit.label + '</strong><br/>' +
+            'id: ' + unit.id + '<br/>' +
+            'status: ' + status + '<br/>' +
+            'last seen: ' + new Date(unit.lastSeenAt).toLocaleString();
+
+          const existing = markers.get(unit.id);
+          if (existing) {
+            existing.setLatLng(ll);
+            existing.setIcon(
+              L.divIcon({ className: "", html: iconHtml(markerColor(unit)), iconSize: [18, 18], iconAnchor: [9, 9] })
+            );
+            existing.bindPopup(popup);
+          } else {
+            const marker = L.marker(ll, {
+              icon: L.divIcon({ className: "", html: iconHtml(markerColor(unit)), iconSize: [18, 18], iconAnchor: [9, 9] })
+            }).addTo(map);
+            marker.bindPopup(popup);
+            markers.set(unit.id, marker);
+          }
+        });
+
+        if (bounds.length > 0) {
+          map.fitBounds(bounds, { padding: [32, 32], maxZoom: 15 });
+        }
+
+        countAvailableEl.textContent = 'Свободни: ' + available;
+        countBusyEl.textContent = 'Заети: ' + busy;
+        countOfflineEl.textContent = 'Офлайн: ' + offline;
+
+        listEl.innerHTML = normalized
+          .sort((a, b) => a.label.localeCompare(b.label))
+          .map((unit) => {
+            const status = statusText(unit);
+            return (
+              '<article class="row">' +
+              '<div><strong>' + unit.label + '</strong><div class="small">' + unit.id + ' | ' + unit.platform + '</div></div>' +
+              '<div class="small">' + status + ' | ' + new Date(unit.lastSeenAt).toLocaleTimeString() + '</div>' +
+              '</article>'
+            );
+          })
+          .join("");
+
+        lastUpdateEl.textContent = 'Обновено: ' + new Date().toLocaleTimeString();
+      };
+
+      const loadInitial = async () => {
+        try {
+          const response = await fetch('/patrol/units/live');
+          const data = await response.json();
+          renderUnits(data);
+        } catch (error) {
+          console.error('Initial load failed', error);
+        }
+      };
+
+      const connectWs = () => {
+        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        const ws = new WebSocket(protocol + '://' + window.location.host + '/ws/patrol');
+
+        ws.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data);
+            if (payload.type === 'patrol_units_updated') {
+              renderUnits(payload.data);
+            }
+          } catch (error) {
+            console.error('WS parse error', error);
+          }
+        };
+
+        ws.onclose = () => {
+          setTimeout(connectWs, 1500);
+        };
+      };
+
+      loadInitial();
+      connectWs();
+      setInterval(loadInitial, 15000);
+    </script>
+  </body>
+</html>`;
+
+  return reply.type("text/html; charset=utf-8").send(html);
+});
 
 app.post("/patrol/register", async (request, reply) => {
   const body = z
@@ -420,6 +711,7 @@ app.post("/patrol/register", async (request, reply) => {
   }
 
   await persistPatrolUnits();
+  broadcastPatrolUnitsUpdated();
   return {
     ok: true,
     unitId: unit.id,
@@ -447,6 +739,7 @@ app.post("/patrol/units/:unitId/heartbeat", async (request, reply) => {
   unit.lng = body.lng;
   unit.lastSeenAt = new Date().toISOString();
   await persistPatrolUnits();
+  broadcastPatrolUnitsUpdated();
   return { ok: true };
 });
 
@@ -484,8 +777,13 @@ app.post("/patrol/units/:unitId/push-token", async (request, reply) => {
   }
 
   await persistPatrolPushTokens();
+  broadcastPatrolUnitsUpdated();
 
   return { ok: true, count: unitTokens.size };
+});
+
+app.get("/patrol/units/live", async () => {
+  return getPatrolUnitsSnapshot();
 });
 
 app.get("/patrol/units/:unitId/push-status", async (request) => {
@@ -648,6 +946,7 @@ app.post("/patrol/incidents/:id/close", async (request, reply) => {
     patrolUnit.activeReportId = null;
     patrolUnit.lastSeenAt = new Date().toISOString();
     await persistPatrolUnits();
+    broadcastPatrolUnitsUpdated();
   }
 
   broadcast("report_updated", report);
@@ -668,6 +967,12 @@ app.get("/reports/:id", async (request, reply) => {
 
 app.get("/ws/patrol", { websocket: true }, (socket) => {
   clients.add(socket);
+  socket.send(
+    JSON.stringify({
+      type: "patrol_units_updated",
+      data: getPatrolUnitsSnapshot()
+    })
+  );
   socket.on("close", () => clients.delete(socket));
 });
 
