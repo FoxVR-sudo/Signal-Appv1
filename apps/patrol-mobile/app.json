@@ -5,8 +5,13 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "platforms": [
-      "android"
+      "android",
+      "ios"
     ],
+    "ios": {
+      "bundleIdentifier": "bg.signal.patrol",
+      "supportsTablet": false
+    },
     "plugins": [
       "expo-notifications"
     ],
