@@ -111,6 +111,11 @@ const persistPatrolPushTokens = async () => {
   }
 };
 
+const isUnitReachable = (unitId: string) => {
+  const tokens = patrolPushTokens.get(unitId);
+  return Boolean(tokens && tokens.size > 0);
+};
+
 const loadReports = async () => {
   try {
     const raw = await fs.readFile(REPORT_STORE_PATH, "utf-8");
@@ -128,6 +133,16 @@ const loadReports = async () => {
     }
 
     for (const report of parsed) {
+      // If a report is assigned to a unit with no reachable channel, put it back to dispatch queue.
+      if (
+        report.assignedUnitId &&
+        report.status !== "closed" &&
+        !isUnitReachable(report.assignedUnitId)
+      ) {
+        report.assignedUnitId = null;
+        report.status = "submitted";
+      }
+
       if (!report.assignedUnitId) continue;
       if (report.status === "closed") continue;
 
@@ -272,7 +287,12 @@ const scheduleReassignment = (reportId: string) => {
 
 const assignNearestPatrol = (report: ReportRecord) => {
   const candidate = patrolUnits
-    .filter((unit) => unit.isAvailable && !report.assignmentAttempts.includes(unit.id))
+    .filter(
+      (unit) =>
+        unit.isAvailable &&
+        !report.assignmentAttempts.includes(unit.id) &&
+        isUnitReachable(unit.id)
+    )
     .map((unit) => ({
       unit,
       distance: haversineMeters(report.lat, report.lng, unit.lat, unit.lng)
