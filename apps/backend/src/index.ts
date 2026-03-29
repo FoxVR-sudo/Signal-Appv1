@@ -422,7 +422,6 @@ app.get("/monitor/patrol", async (_request, reply) => {
     />
     <style>
       :root {
-        --bg: #f5f1e9;
         --panel: rgba(255, 255, 255, 0.82);
         --ink: #1f2b38;
         --muted: #5f6f81;
@@ -483,6 +482,20 @@ app.get("/monitor/patrol", async (_request, reply) => {
       .ok { color: var(--ok); }
       .busy { color: var(--busy); }
       .off { color: var(--off); }
+      .legend {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+      .legend-dot {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 3px;
+        margin-right: 6px;
+      }
       .map-wrap {
         overflow: hidden;
         border-radius: 18px;
@@ -525,11 +538,18 @@ app.get("/monitor/patrol", async (_request, reply) => {
         <div>
           <h1 class="title">Signal Patrol Live Map</h1>
           <div class="meta" id="last-update">Чакаме първи данни...</div>
+          <div class="legend">
+            <span><i class="legend-dot" style="background:#2f80ed"></i>submitted</span>
+            <span><i class="legend-dot" style="background:#f4a300"></i>assigned</span>
+            <span><i class="legend-dot" style="background:#8b5cf6"></i>accepted</span>
+            <span><i class="legend-dot" style="background:#e63946"></i>on_site</span>
+          </div>
         </div>
         <div class="chips">
           <span class="chip ok" id="count-available">Свободни: 0</span>
           <span class="chip busy" id="count-busy">Заети: 0</span>
           <span class="chip off" id="count-offline">Офлайн: 0</span>
+          <span class="chip" id="count-incidents">Активни инциденти: 0</span>
         </div>
       </section>
       <section class="map-wrap"><div id="map"></div></section>
@@ -547,42 +567,77 @@ app.get("/monitor/patrol", async (_request, reply) => {
         attribution: "&copy; OpenStreetMap contributors"
       }).addTo(map);
 
-      const markers = new Map();
+      const patrolLayer = L.layerGroup().addTo(map);
+      const incidentLayer = L.layerGroup().addTo(map);
+      L.control.layers(null, { "Патрули": patrolLayer, "Инциденти": incidentLayer }, { collapsed: false }).addTo(map);
+
+      const unitMarkers = new Map();
+      const incidentMarkers = new Map();
+      const viewportPoints = [];
+      let hasFitted = false;
+
       const lastUpdateEl = document.getElementById("last-update");
       const listEl = document.getElementById("units-list");
       const countAvailableEl = document.getElementById("count-available");
       const countBusyEl = document.getElementById("count-busy");
       const countOfflineEl = document.getElementById("count-offline");
+      const countIncidentsEl = document.getElementById("count-incidents");
+
+      const incidentColor = {
+        submitted: "#2f80ed",
+        assigned: "#f4a300",
+        accepted: "#8b5cf6",
+        on_site: "#e63946"
+      };
 
       const statusText = (unit) => {
         if (!unit.active || !unit.reachable) return "offline";
         return unit.isAvailable ? "available" : "busy";
       };
 
-      const markerColor = (unit) => {
+      const patrolMarkerColor = (unit) => {
         const status = statusText(unit);
         if (status === "available") return "#11823b";
         if (status === "busy") return "#c57606";
         return "#8a98a6";
       };
 
-      const iconHtml = (color) =>
+      const patrolIconHtml = (color) =>
         '<span style="display:inline-block;width:18px;height:18px;border-radius:50%;background:' +
         color +
         ';border:2px solid white;box-shadow:0 2px 8px rgba(0,0,0,.25)"></span>';
+
+      const incidentIconHtml = (status) => {
+        const color = incidentColor[status] || "#2f80ed";
+        if (status === "assigned") {
+          return '<span style="display:inline-block;width:14px;height:14px;background:' + color + ';transform:rotate(45deg);border:2px solid white;box-shadow:0 2px 6px rgba(0,0,0,.25)"></span>';
+        }
+        if (status === "submitted") {
+          return '<span style="display:inline-block;width:14px;height:14px;background:' + color + ';border-radius:3px;border:2px solid white;box-shadow:0 2px 6px rgba(0,0,0,.25)"></span>';
+        }
+        if (status === "accepted") {
+          return '<span style="display:inline-block;width:16px;height:16px;background:' + color + ';border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,.25)"></span>';
+        }
+        return '<span style="display:inline-block;width:18px;height:18px;background:' + color + ';border-radius:50%;border:3px solid white;box-shadow:0 0 0 4px rgba(230,57,70,.25),0 2px 8px rgba(0,0,0,.25)"></span>';
+      };
+
+      const fitViewport = () => {
+        if (hasFitted || viewportPoints.length === 0) return;
+        map.fitBounds(viewportPoints, { padding: [32, 32], maxZoom: 15 });
+        hasFitted = true;
+      };
 
       const renderUnits = (units) => {
         const normalized = Array.isArray(units) ? units : [];
         const seenIds = new Set(normalized.map((unit) => unit.id));
 
-        for (const [unitId, marker] of markers.entries()) {
+        for (const [unitId, marker] of unitMarkers.entries()) {
           if (!seenIds.has(unitId)) {
-            map.removeLayer(marker);
-            markers.delete(unitId);
+            patrolLayer.removeLayer(marker);
+            unitMarkers.delete(unitId);
           }
         }
 
-        const bounds = [];
         let available = 0;
         let busy = 0;
         let offline = 0;
@@ -594,7 +649,7 @@ app.get("/monitor/patrol", async (_request, reply) => {
           else offline += 1;
 
           const ll = [unit.lat, unit.lng];
-          bounds.push(ll);
+          viewportPoints.push(ll);
 
           const popup =
             '<strong>' + unit.label + '</strong><br/>' +
@@ -602,25 +657,19 @@ app.get("/monitor/patrol", async (_request, reply) => {
             'status: ' + status + '<br/>' +
             'last seen: ' + new Date(unit.lastSeenAt).toLocaleString();
 
-          const existing = markers.get(unit.id);
+          const existing = unitMarkers.get(unit.id);
           if (existing) {
             existing.setLatLng(ll);
-            existing.setIcon(
-              L.divIcon({ className: "", html: iconHtml(markerColor(unit)), iconSize: [18, 18], iconAnchor: [9, 9] })
-            );
+            existing.setIcon(L.divIcon({ className: "", html: patrolIconHtml(patrolMarkerColor(unit)), iconSize: [18, 18], iconAnchor: [9, 9] }));
             existing.bindPopup(popup);
           } else {
             const marker = L.marker(ll, {
-              icon: L.divIcon({ className: "", html: iconHtml(markerColor(unit)), iconSize: [18, 18], iconAnchor: [9, 9] })
-            }).addTo(map);
+              icon: L.divIcon({ className: "", html: patrolIconHtml(patrolMarkerColor(unit)), iconSize: [18, 18], iconAnchor: [9, 9] })
+            }).addTo(patrolLayer);
             marker.bindPopup(popup);
-            markers.set(unit.id, marker);
+            unitMarkers.set(unit.id, marker);
           }
         });
-
-        if (bounds.length > 0) {
-          map.fitBounds(bounds, { padding: [32, 32], maxZoom: 15 });
-        }
 
         countAvailableEl.textContent = 'Свободни: ' + available;
         countBusyEl.textContent = 'Заети: ' + busy;
@@ -639,16 +688,66 @@ app.get("/monitor/patrol", async (_request, reply) => {
           })
           .join("");
 
+        fitViewport();
         lastUpdateEl.textContent = 'Обновено: ' + new Date().toLocaleTimeString();
       };
 
-      const loadInitial = async () => {
+      const renderIncidents = (incidents) => {
+        const normalized = Array.isArray(incidents) ? incidents : [];
+        const seenIds = new Set(normalized.map((item) => item.id));
+
+        for (const [incidentId, marker] of incidentMarkers.entries()) {
+          if (!seenIds.has(incidentId)) {
+            incidentLayer.removeLayer(marker);
+            incidentMarkers.delete(incidentId);
+          }
+        }
+
+        normalized.forEach((incident) => {
+          const ll = [incident.lat, incident.lng];
+          viewportPoints.push(ll);
+
+          const popup =
+            '<strong>Инцидент</strong><br/>' +
+            'id: ' + incident.id + '<br/>' +
+            'status: ' + incident.status + '<br/>' +
+            'assigned: ' + (incident.assignedUnitId || 'none');
+
+          const existing = incidentMarkers.get(incident.id);
+          if (existing) {
+            existing.setLatLng(ll);
+            existing.setIcon(L.divIcon({ className: "", html: incidentIconHtml(incident.status), iconSize: [18, 18], iconAnchor: [9, 9] }));
+            existing.bindPopup(popup);
+          } else {
+            const marker = L.marker(ll, {
+              icon: L.divIcon({ className: "", html: incidentIconHtml(incident.status), iconSize: [18, 18], iconAnchor: [9, 9] })
+            }).addTo(incidentLayer);
+            marker.bindPopup(popup);
+            incidentMarkers.set(incident.id, marker);
+          }
+        });
+
+        countIncidentsEl.textContent = 'Активни инциденти: ' + normalized.length;
+        fitViewport();
+      };
+
+      const loadUnits = async () => {
+        const response = await fetch('/patrol/units/live');
+        const data = await response.json();
+        renderUnits(data);
+      };
+
+      const loadIncidents = async () => {
+        const response = await fetch('/monitor/incidents/active');
+        const data = await response.json();
+        renderIncidents(data);
+      };
+
+      const loadAll = async () => {
         try {
-          const response = await fetch('/patrol/units/live');
-          const data = await response.json();
-          renderUnits(data);
+          await Promise.all([loadUnits(), loadIncidents()]);
         } catch (error) {
-          console.error('Initial load failed', error);
+          console.error('Load failed', error);
         }
       };
 
@@ -661,6 +760,10 @@ app.get("/monitor/patrol", async (_request, reply) => {
             const payload = JSON.parse(event.data);
             if (payload.type === 'patrol_units_updated') {
               renderUnits(payload.data);
+              return;
+            }
+            if (payload.type && payload.type.startsWith('report_')) {
+              void loadIncidents();
             }
           } catch (error) {
             console.error('WS parse error', error);
@@ -672,9 +775,9 @@ app.get("/monitor/patrol", async (_request, reply) => {
         };
       };
 
-      loadInitial();
+      loadAll();
       connectWs();
-      setInterval(loadInitial, 15000);
+      setInterval(loadAll, 15000);
     </script>
   </body>
 </html>`;
@@ -815,6 +918,10 @@ app.get("/patrol/incidents/live", async (request) => {
     })
     .slice(-20)
     .reverse();
+});
+
+app.get("/monitor/incidents/active", async () => {
+  return reports.filter((report) => report.status !== "closed").reverse();
 });
 
 app.post("/reports", async (request, reply) => {
