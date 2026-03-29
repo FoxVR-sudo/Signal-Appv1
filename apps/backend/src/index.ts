@@ -46,6 +46,8 @@ const patrolUnits: PatrolUnit[] = [
 const clients = new Set<import("ws").WebSocket>();
 const reassignmentTimers = new Map<string, NodeJS.Timeout>();
 const ASSIGNMENT_TIMEOUT_MS = 120_000;
+const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
+const patrolPushTokens = new Map<string, Set<string>>();
 
 const toRadians = (value: number) => (value * Math.PI) / 180;
 
@@ -63,6 +65,64 @@ const broadcast = (type: string, data: unknown) => {
   const message = JSON.stringify({ type, data });
   for (const ws of clients) {
     if (ws.readyState === ws.OPEN) ws.send(message);
+  }
+};
+
+const isExpoPushToken = (token: string) => /^ExponentPushToken\[[\w-]+\]$/.test(token);
+
+const sendPushToUnit = async (
+  unitId: string,
+  title: string,
+  body: string,
+  data: Record<string, string>
+) => {
+  const tokens = patrolPushTokens.get(unitId);
+  if (!tokens?.size) {
+    return;
+  }
+
+  const messages = [...tokens].map((token) => ({
+    to: token,
+    title,
+    body,
+    sound: "default",
+    priority: "high",
+    channelId: "dispatch",
+    data
+  }));
+
+  try {
+    const response = await fetch(EXPO_PUSH_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify(messages)
+    });
+
+    if (!response.ok) {
+      app.log.warn({ unitId, status: response.status }, "Failed to send Expo push notification");
+      return;
+    }
+
+    const payload = (await response.json()) as {
+      data?: Array<{ status: "ok" | "error"; details?: { error?: string } }>;
+    };
+
+    payload.data?.forEach((ticket, index) => {
+      if (ticket.status !== "error") {
+        return;
+      }
+
+      const token = messages[index]?.to;
+      app.log.warn({ unitId, token, error: ticket.details?.error }, "Expo push ticket returned error");
+      if (ticket.details?.error === "DeviceNotRegistered" && token) {
+        tokens.delete(token);
+      }
+    });
+  } catch (error) {
+    app.log.warn({ unitId, error }, "Expo push send request failed");
   }
 };
 
@@ -101,6 +161,12 @@ const scheduleReassignment = (reportId: string) => {
       unitId: reassignedUnit.id,
       unitLabel: reassignedUnit.label
     });
+    void sendPushToUnit(
+      reassignedUnit.id,
+      "Пренасочен сигнал",
+      `Сигнал ${report.id.slice(0, 8)} е прехвърлен към теб`,
+      { reportId: report.id, event: "report_reassigned" }
+    );
     broadcast("report_updated", report);
     scheduleReassignment(report.id);
   }, ASSIGNMENT_TIMEOUT_MS);
@@ -131,6 +197,26 @@ const assignNearestPatrol = (report: ReportRecord) => {
 };
 
 app.get("/health", async () => ({ ok: true }));
+
+app.post("/patrol/units/:unitId/push-token", async (request, reply) => {
+  const params = z.object({ unitId: z.string() }).parse(request.params);
+  const body = z
+    .object({
+      token: z.string().min(10),
+      platform: z.enum(["android", "ios"]).default("android")
+    })
+    .parse(request.body);
+
+  if (!isExpoPushToken(body.token)) {
+    return reply.code(400).send({ error: "Invalid Expo push token" });
+  }
+
+  const unitTokens = patrolPushTokens.get(params.unitId) ?? new Set<string>();
+  unitTokens.add(body.token);
+  patrolPushTokens.set(params.unitId, unitTokens);
+
+  return { ok: true, count: unitTokens.size };
+});
 
 app.get("/patrol/incidents/live", async (request) => {
   const query = z
@@ -194,6 +280,12 @@ app.post("/reports", async (request, reply) => {
       unitId: assignedUnit.id,
       unitLabel: assignedUnit.label
     });
+    void sendPushToUnit(
+      assignedUnit.id,
+      "Нов сигнал",
+      `Сигнал ${report.id.slice(0, 8)} е разпределен към теб`,
+      { reportId: report.id, event: "report_assigned" }
+    );
     scheduleReassignment(report.id);
   }
 

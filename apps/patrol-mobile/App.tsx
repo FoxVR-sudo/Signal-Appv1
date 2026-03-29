@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  AppState,
   Alert,
   FlatList,
   Image,
+  Platform,
   Pressable,
   SafeAreaView,
   StyleSheet,
@@ -10,6 +12,8 @@ import {
   Vibration,
   View
 } from "react-native";
+import Constants from "expo-constants";
+import * as Notifications from "expo-notifications";
 
 type ReportRecord = {
   id: string;
@@ -29,11 +33,21 @@ const API_BASE =
   "https://signal-backend-8pyp.onrender.com";
 const UNIT_ID = process.env.EXPO_PUBLIC_PATROL_UNIT_ID ?? "patrol-1";
 
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false
+  })
+});
+
 export default function App() {
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [dispatchNotice, setDispatchNotice] = useState<string | null>(null);
   const [pendingActionReportId, setPendingActionReportId] = useState<string | null>(null);
+  const [pushState, setPushState] = useState<string>("Push: инициализация...");
 
   const websocketUrl = useMemo(() => {
     if (API_BASE.startsWith("https://")) {
@@ -162,6 +176,82 @@ export default function App() {
     return () => clearInterval(refreshTimer);
   }, []);
 
+  useEffect(() => {
+    const registerPush = async () => {
+      try {
+        if (Platform.OS === "android") {
+          await Notifications.setNotificationChannelAsync("dispatch", {
+            name: "Dispatch",
+            importance: Notifications.AndroidImportance.MAX,
+            vibrationPattern: [0, 200, 120, 200],
+            lightColor: "#0b3d91"
+          });
+        }
+
+        const permissions = await Notifications.getPermissionsAsync();
+        let finalStatus = permissions.status;
+        if (finalStatus !== "granted") {
+          const requested = await Notifications.requestPermissionsAsync();
+          finalStatus = requested.status;
+        }
+
+        if (finalStatus !== "granted") {
+          setPushState("Push: отказано разрешение");
+          return;
+        }
+
+        const projectId =
+          Constants.easConfig?.projectId ??
+          ((Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined)?.eas
+            ?.projectId ?? null);
+
+        if (!projectId) {
+          setPushState("Push: липсва projectId");
+          return;
+        }
+
+        const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+        const response = await fetch(`${API_BASE}/patrol/units/${UNIT_ID}/push-token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, platform: Platform.OS })
+        });
+
+        if (!response.ok) {
+          setPushState("Push: token registration failed");
+          return;
+        }
+
+        setPushState("Push: активно");
+      } catch {
+        setPushState("Push: недостъпно");
+      }
+    };
+
+    void registerPush();
+
+    const responseSub = Notifications.addNotificationResponseReceivedListener(() => {
+      void refreshReports();
+      setDispatchNotice("Отворен сигнал от известие");
+    });
+
+    const receiveSub = Notifications.addNotificationReceivedListener(() => {
+      void refreshReports();
+    });
+
+    const appStateSub = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        void refreshReports();
+      }
+    });
+
+    return () => {
+      responseSub.remove();
+      receiveSub.remove();
+      appStateSub.remove();
+    };
+  }, []);
+
   const updateStatus = async (reportId: string, action: "accept" | "arrived" | "close") => {
     setPendingActionReportId(reportId);
     try {
@@ -249,6 +339,7 @@ export default function App() {
         <Text style={styles.subtitle}>
           Статус: {isConnected ? "Свързано в реално време" : "Изчаква връзка"}
         </Text>
+        <Text style={styles.subtitle}>{pushState}</Text>
         {dispatchNotice ? <Text style={styles.notice}>{dispatchNotice}</Text> : null}
       </View>
 
