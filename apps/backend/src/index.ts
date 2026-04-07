@@ -1199,6 +1199,13 @@ app.get("/monitor/admin", async (_request, reply) => {
           .join('');
       };
 
+      const toDisplayStatus = (report) => {
+        if (!report.assignedUnitId && report.status === 'submitted') {
+          return 'pending';
+        }
+        return report.status;
+      };
+
       const load = async () => {
         const status = filterEl.value;
         const url = status ? '/monitor/admin/reports?status=' + status : '/monitor/admin/reports';
@@ -1207,7 +1214,8 @@ app.get("/monitor/admin", async (_request, reply) => {
         const payload = await response.json();
 
         bodyEl.innerHTML = payload.items.map((report) => {
-          const statusPill = '<span class="status-pill">' + report.status + '</span>';
+          const displayStatus = toDisplayStatus(report);
+          const statusPill = '<span class="status-pill">' + displayStatus + '</span>';
           const actions = report.status === 'validated' || report.status === 'rejected'
             ? ''
             : '<button class="action-btn approve" data-id="' + report.id + '" data-action="validate">Потвърди</button>' +
@@ -1256,6 +1264,7 @@ app.get("/monitor/admin", async (_request, reply) => {
       refreshBtn.addEventListener('click', load);
       filterEl.addEventListener('change', load);
       load();
+      setInterval(load, 15000);
     </script>
   </body>
 </html>`;
