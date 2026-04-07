@@ -1166,6 +1166,7 @@ app.get("/monitor/admin", async (_request, reply) => {
               <th>Статус</th>
               <th>Получен</th>
               <th>Патрул</th>
+              <th>Разпределяне</th>
               <th>Действия</th>
             </tr>
           </thead>
@@ -1177,10 +1178,31 @@ app.get("/monitor/admin", async (_request, reply) => {
       const bodyEl = document.getElementById('reportsBody');
       const filterEl = document.getElementById('statusFilter');
       const refreshBtn = document.getElementById('refreshBtn');
+      let unitsCache = [];
+
+      const loadUnits = async () => {
+        try {
+          const response = await fetch('/patrol/units/live');
+          unitsCache = await response.json();
+        } catch {
+          unitsCache = [];
+        }
+      };
+
+      const buildUnitOptions = (selectedId) => {
+        return unitsCache
+          .map((unit) => {
+            const selected = unit.id === selectedId ? 'selected' : '';
+            const label = unit.label + ' (' + unit.id + ')';
+            return '<option value="' + unit.id + '" ' + selected + '>' + label + '</option>';
+          })
+          .join('');
+      };
 
       const load = async () => {
         const status = filterEl.value;
         const url = status ? '/monitor/admin/reports?status=' + status : '/monitor/admin/reports';
+        await loadUnits();
         const response = await fetch(url);
         const payload = await response.json();
 
@@ -1190,6 +1212,13 @@ app.get("/monitor/admin", async (_request, reply) => {
             ? ''
             : '<button class="action-btn approve" data-id="' + report.id + '" data-action="validate">Потвърди</button>' +
               '<button class="action-btn reject" data-id="' + report.id + '" data-action="reject">Откажи</button>';
+          const unitOptions = buildUnitOptions(report.assignedUnitId);
+          const assignControls = unitsCache.length
+            ? '<div style="display:flex;gap:6px;align-items:center">' +
+                '<select data-role="unit" data-id="' + report.id + '">' + unitOptions + '</select>' +
+                '<button class="action-btn approve" data-id="' + report.id + '" data-action="assign">Изпрати</button>' +
+              '</div>'
+            : '-';
           return (
             '<tr>' +
             '<td>' + report.id.slice(0, 8) + '</td>' +
@@ -1197,6 +1226,7 @@ app.get("/monitor/admin", async (_request, reply) => {
             '<td>' + statusPill + '</td>' +
             '<td>' + new Date(report.receivedAtServer).toLocaleString('bg-BG') + '</td>' +
             '<td>' + (report.assignedUnitId || '-') + '</td>' +
+            '<td>' + assignControls + '</td>' +
             '<td>' + actions + '</td>' +
             '</tr>'
           );
@@ -1208,7 +1238,18 @@ app.get("/monitor/admin", async (_request, reply) => {
         if (!button) return;
         const reportId = button.dataset.id;
         const action = button.dataset.action;
-        await fetch('/admin/reports/' + reportId + '/' + action, { method: 'POST' });
+        if (action === 'assign') {
+          const selector = bodyEl.querySelector('select[data-role="unit"][data-id="' + reportId + '"]');
+          const unitId = selector ? selector.value : '';
+          if (!unitId) return;
+          await fetch('/admin/reports/' + reportId + '/assign', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ unitId })
+          });
+        } else {
+          await fetch('/admin/reports/' + reportId + '/' + action, { method: 'POST' });
+        }
         await load();
       });
 
@@ -1236,6 +1277,61 @@ app.get("/monitor/admin/reports", async (request) => {
     .slice(0, query.limit);
 
   return { items };
+});
+
+app.post("/admin/reports/:id/assign", async (request, reply) => {
+  const params = z.object({ id: z.string() }).parse(request.params);
+  const body = z.object({ unitId: z.string() }).parse(request.body ?? {});
+
+  const report = reports.find((item) => item.id === params.id);
+  if (!report) {
+    return reply.code(404).send({ error: "Report not found" });
+  }
+
+  const targetUnit = getPatrolUnitById(body.unitId);
+  if (!targetUnit) {
+    return reply.code(404).send({ error: "Patrol unit not found" });
+  }
+
+  if (report.assignedUnitId && report.assignedUnitId !== targetUnit.id) {
+    const previousUnit = getPatrolUnitById(report.assignedUnitId);
+    if (previousUnit) {
+      previousUnit.isAvailable = true;
+      previousUnit.activeReportId = null;
+    }
+  }
+
+  report.assignedUnitId = targetUnit.id;
+  report.status = "assigned";
+  report.assignmentAttempts.push(targetUnit.id);
+
+  targetUnit.isAvailable = false;
+  targetUnit.activeReportId = report.id;
+  targetUnit.lastSeenAt = new Date().toISOString();
+  await persistPatrolUnits();
+
+  broadcast("report_assigned", {
+    reportId: report.id,
+    unitId: targetUnit.id,
+    unitLabel: targetUnit.label
+  });
+  broadcast("report_updated", report);
+  await persistReports();
+
+  void sendPushToUnit(
+    targetUnit.id,
+    "Нов сигнал",
+    `Тел: ${report.phone} | ${report.lat.toFixed(4)}, ${report.lng.toFixed(4)}`,
+    {
+      reportId: report.id,
+      event: "report_assigned",
+      phone: report.phone,
+      lat: String(report.lat),
+      lng: String(report.lng)
+    }
+  );
+
+  return { ok: true, report };
 });
 
 app.get("/monitor/heatmap", async (_request, reply) => {
@@ -1346,10 +1442,6 @@ app.post("/patrol/register", async (request, reply) => {
   }
 
   await persistPatrolUnits();
-  reportStateChanged = (await assignPendingReports()) || reportStateChanged;
-  if (reportStateChanged) {
-    await persistReports();
-  }
   broadcastPatrolUnitsUpdated();
   return {
     ok: true,
@@ -1422,10 +1514,6 @@ app.post("/patrol/units/:unitId/push-token", async (request, reply) => {
   }
 
   await persistPatrolPushTokens();
-  reportStateChanged = (await assignPendingReports()) || reportStateChanged;
-  if (reportStateChanged) {
-    await persistReports();
-  }
   broadcastPatrolUnitsUpdated();
 
   return { ok: true, count: unitTokens.size };
@@ -1516,30 +1604,7 @@ app.post("/reports", async (request, reply) => {
 
   reports.push(report);
   await persistReports();
-  const assignedUnit = assignNearestPatrol(report);
-
   broadcast("report_created", report);
-  if (assignedUnit) {
-    broadcast("report_assigned", {
-      reportId: report.id,
-      unitId: assignedUnit.id,
-      unitLabel: assignedUnit.label
-    });
-    void sendPushToUnit(
-      assignedUnit.id,
-      "Нов сигнал",
-      `Тел: ${report.phone} | ${report.lat.toFixed(4)}, ${report.lng.toFixed(4)}`,
-      {
-        reportId: report.id,
-        event: "report_assigned",
-        phone: report.phone,
-        lat: String(report.lat),
-        lng: String(report.lng)
-      }
-    );
-    scheduleReassignment(report.id);
-    await persistReports();
-  }
 
   return reply.code(201).send(report);
 });
