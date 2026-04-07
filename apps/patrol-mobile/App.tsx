@@ -29,7 +29,7 @@ type ReportRecord = {
   gpsAccuracyM: number;
   capturedAtDevice: string;
   receivedAtServer: string;
-  status: "submitted" | "assigned" | "accepted" | "on_site" | "closed";
+  status: "submitted" | "assigned" | "accepted" | "on_site" | "closed" | "validated" | "rejected";
   assignedUnitId: string | null;
   acceptedAt: string | null;
   arrivedAt: string | null;
@@ -527,6 +527,10 @@ export default function App() {
         return `${report.assignedUnitId} е на място`;
       case "closed":
         return `Приключен от ${report.assignedUnitId}`;
+      case "validated":
+        return `Потвърден от админ`;
+      case "rejected":
+        return `Отхвърлен от админ`;
       default:
         return `Обработва се от ${report.assignedUnitId}`;
     }

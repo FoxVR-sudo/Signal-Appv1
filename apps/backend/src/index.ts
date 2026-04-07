@@ -5,7 +5,14 @@ import { z } from "zod";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-type ReportStatus = "submitted" | "assigned" | "accepted" | "on_site" | "closed";
+type ReportStatus =
+  | "submitted"
+  | "assigned"
+  | "accepted"
+  | "on_site"
+  | "closed"
+  | "validated"
+  | "rejected";
 
 type ReportRecord = {
   id: string;
@@ -22,6 +29,8 @@ type ReportRecord = {
   acceptedAt: string | null;
   arrivedAt: string | null;
   closedAt: string | null;
+  validatedAt: string | null;
+  rejectedAt: string | null;
 };
 
 type PatrolUnit = {
@@ -122,7 +131,8 @@ const toMonthKey = (value: string) => {
   return `${year}-${month}`;
 };
 
-const isReportVerified = (report: ReportRecord) => Boolean(report.arrivedAt || report.closedAt);
+const isReportVerified = (report: ReportRecord) =>
+  Boolean(report.validatedAt || report.arrivedAt || report.closedAt);
 const isReportAccepted = (report: ReportRecord) =>
   Boolean(report.acceptedAt || report.arrivedAt || report.closedAt);
 
@@ -132,7 +142,7 @@ const toCitizenHistoryEntry = (report: ReportRecord): CitizenHistoryEntry => ({
   status: report.status,
   assignedUnitId: report.assignedUnitId,
   verified: isReportVerified(report),
-  verifiedAt: report.arrivedAt ?? report.closedAt
+  verifiedAt: report.validatedAt ?? report.arrivedAt ?? report.closedAt
 });
 
 const buildMonthlyLeaderboard = (monthKey: string, limit?: number) => {
@@ -705,6 +715,21 @@ app.get("/monitor/patrol", async (_request, reply) => {
         display: grid;
         gap: 14px;
       }
+      .top-nav {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        font-size: 0.9rem;
+      }
+      .top-nav a {
+        text-decoration: none;
+        color: #0b3d91;
+        font-weight: 700;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.9);
+        border: 1px solid rgba(31, 43, 56, 0.12);
+      }
       .hero {
         background: var(--panel);
         border: 1px solid rgba(31, 43, 56, 0.08);
@@ -793,6 +818,11 @@ app.get("/monitor/patrol", async (_request, reply) => {
   </head>
   <body>
     <main class="shell">
+      <nav class="top-nav">
+        <a href="/monitor/patrol">Патрули</a>
+        <a href="/monitor/admin">Админ</a>
+        <a href="/monitor/heatmap">Heatmap</a>
+      </nav>
       <section class="hero">
         <div>
           <h1 class="title">Signal Patrol Live Map</h1>
@@ -1044,6 +1074,242 @@ app.get("/monitor/patrol", async (_request, reply) => {
   return reply.type("text/html; charset=utf-8").send(html);
 });
 
+app.get("/monitor/admin", async (_request, reply) => {
+  const html = `<!doctype html>
+<html lang="bg">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Signal Admin Panel</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: "Segoe UI", sans-serif;
+        background: #f3f6fb;
+        color: #1f2b38;
+      }
+      main {
+        width: min(1200px, 96vw);
+        margin: 20px auto;
+        display: grid;
+        gap: 14px;
+      }
+      .top-nav {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .top-nav a {
+        text-decoration: none;
+        color: #0b3d91;
+        font-weight: 700;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: #fff;
+        border: 1px solid rgba(31, 43, 56, 0.12);
+      }
+      .panel {
+        background: #fff;
+        border-radius: 14px;
+        border: 1px solid #dce4ef;
+        padding: 14px;
+      }
+      h1 { margin: 0; font-size: 1.4rem; }
+      .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+      select, button {
+        border-radius: 8px;
+        border: 1px solid #cbd5e1;
+        padding: 8px 12px;
+        background: #fff;
+      }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: 10px; border-bottom: 1px solid #eef2f7; text-align: left; font-size: 0.9rem; }
+      th { color: #64748b; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; }
+      .action-btn { border-radius: 8px; padding: 6px 10px; border: none; cursor: pointer; font-weight: 700; }
+      .approve { background: #dcfce7; color: #166534; }
+      .reject { background: #fee2e2; color: #991b1b; }
+      .status-pill { padding: 4px 8px; border-radius: 999px; background: #f1f5f9; font-size: 0.75rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <nav class="top-nav">
+        <a href="/monitor/patrol">Патрули</a>
+        <a href="/monitor/admin">Админ</a>
+        <a href="/monitor/heatmap">Heatmap</a>
+      </nav>
+      <section class="panel">
+        <h1>Админ панел</h1>
+        <div class="filters">
+          <label>
+            Статус
+            <select id="statusFilter">
+              <option value="">Всички</option>
+              <option value="submitted">submitted</option>
+              <option value="assigned">assigned</option>
+              <option value="accepted">accepted</option>
+              <option value="on_site">on_site</option>
+              <option value="closed">closed</option>
+              <option value="validated">validated</option>
+              <option value="rejected">rejected</option>
+            </select>
+          </label>
+          <button id="refreshBtn">Обнови</button>
+        </div>
+      </section>
+      <section class="panel">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Телефон</th>
+              <th>Статус</th>
+              <th>Получен</th>
+              <th>Патрул</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody id="reportsBody"></tbody>
+        </table>
+      </section>
+    </main>
+    <script>
+      const bodyEl = document.getElementById('reportsBody');
+      const filterEl = document.getElementById('statusFilter');
+      const refreshBtn = document.getElementById('refreshBtn');
+
+      const load = async () => {
+        const status = filterEl.value;
+        const url = status ? '/monitor/admin/reports?status=' + status : '/monitor/admin/reports';
+        const response = await fetch(url);
+        const payload = await response.json();
+
+        bodyEl.innerHTML = payload.items.map((report) => {
+          const statusPill = '<span class="status-pill">' + report.status + '</span>';
+          const actions = report.status === 'validated' || report.status === 'rejected'
+            ? ''
+            : '<button class="action-btn approve" data-id="' + report.id + '" data-action="validate">Потвърди</button>' +
+              '<button class="action-btn reject" data-id="' + report.id + '" data-action="reject">Откажи</button>';
+          return (
+            '<tr>' +
+            '<td>' + report.id.slice(0, 8) + '</td>' +
+            '<td>' + report.phone + '</td>' +
+            '<td>' + statusPill + '</td>' +
+            '<td>' + new Date(report.receivedAtServer).toLocaleString('bg-BG') + '</td>' +
+            '<td>' + (report.assignedUnitId || '-') + '</td>' +
+            '<td>' + actions + '</td>' +
+            '</tr>'
+          );
+        }).join('');
+      };
+
+      bodyEl.addEventListener('click', async (event) => {
+        const button = event.target.closest('button[data-action]');
+        if (!button) return;
+        const reportId = button.dataset.id;
+        const action = button.dataset.action;
+        await fetch('/admin/reports/' + reportId + '/' + action, { method: 'POST' });
+        await load();
+      });
+
+      refreshBtn.addEventListener('click', load);
+      filterEl.addEventListener('change', load);
+      load();
+    </script>
+  </body>
+</html>`;
+
+  return reply.type("text/html; charset=utf-8").send(html);
+});
+
+app.get("/monitor/admin/reports", async (request) => {
+  const query = z
+    .object({
+      status: z.string().optional(),
+      limit: z.coerce.number().min(1).max(200).default(50)
+    })
+    .parse(request.query ?? {});
+
+  const items = reports
+    .filter((report) => (query.status ? report.status === query.status : true))
+    .sort((left, right) => new Date(right.receivedAtServer).getTime() - new Date(left.receivedAtServer).getTime())
+    .slice(0, query.limit);
+
+  return { items };
+});
+
+app.get("/monitor/heatmap", async (_request, reply) => {
+  const html = `<!doctype html>
+<html lang="bg">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Signal Heatmap</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <style>
+      body { margin: 0; font-family: "Segoe UI", sans-serif; background: #f3f6fb; color: #1f2b38; }
+      main { width: min(1200px, 96vw); margin: 20px auto; display: grid; gap: 12px; }
+      .top-nav { display: flex; gap: 12px; flex-wrap: wrap; }
+      .top-nav a { text-decoration: none; color: #0b3d91; font-weight: 700; padding: 6px 10px; border-radius: 999px; background: #fff; border: 1px solid rgba(31, 43, 56, 0.12); }
+      .panel { background: #fff; border-radius: 14px; border: 1px solid #dce4ef; padding: 12px; }
+      #map { width: 100%; height: 72vh; border-radius: 12px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <nav class="top-nav">
+        <a href="/monitor/patrol">Патрули</a>
+        <a href="/monitor/admin">Админ</a>
+        <a href="/monitor/heatmap">Heatmap</a>
+      </nav>
+      <section class="panel">
+        <div id="map"></div>
+      </section>
+    </main>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+    <script>
+      const map = L.map('map').setView([42.6977, 23.3219], 12);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+
+      const load = async () => {
+        const response = await fetch('/monitor/heatmap/data?days=30');
+        const payload = await response.json();
+        const points = payload.points.map((item) => [item.lat, item.lng, item.weight]);
+        const heat = L.heatLayer(points, { radius: 28, blur: 22, maxZoom: 16 });
+        heat.addTo(map);
+      };
+
+      load();
+    </script>
+  </body>
+</html>`;
+
+  return reply.type("text/html; charset=utf-8").send(html);
+});
+
+app.get("/monitor/heatmap/data", async (request) => {
+  const query = z
+    .object({ days: z.coerce.number().min(1).max(365).default(30) })
+    .parse(request.query ?? {});
+
+  const cutoff = Date.now() - query.days * 24 * 60 * 60 * 1000;
+  const points = reports
+    .filter((report) => report.status !== "rejected")
+    .filter((report) => new Date(report.receivedAtServer).getTime() >= cutoff)
+    .map((report) => ({ lat: report.lat, lng: report.lng, weight: 1 }));
+
+  return { points };
+});
+
 app.post("/patrol/register", async (request, reply) => {
   const body = z
     .object({
@@ -1192,6 +1458,7 @@ app.get("/patrol/incidents/live", async (request) => {
     .parse(request.query ?? {});
 
   return reports
+    .filter((report) => !["validated", "rejected"].includes(report.status))
     .filter((report) => {
       if (!query.unitId) return true;
       return report.assignedUnitId === query.unitId;
@@ -1201,7 +1468,9 @@ app.get("/patrol/incidents/live", async (request) => {
 });
 
 app.get("/monitor/incidents/active", async () => {
-  return reports.filter((report) => report.status !== "closed").reverse();
+  return reports
+    .filter((report) => !["closed", "validated", "rejected"].includes(report.status))
+    .reverse();
 });
 
 app.post("/reports", async (request, reply) => {
@@ -1240,7 +1509,9 @@ app.post("/reports", async (request, reply) => {
     assignmentAttempts: [],
     acceptedAt: null,
     arrivedAt: null,
-    closedAt: null
+    closedAt: null,
+    validatedAt: null,
+    rejectedAt: null
   };
 
   reports.push(report);
@@ -1328,6 +1599,64 @@ app.post("/patrol/incidents/:id/close", async (request, reply) => {
   report.closedAt = new Date().toISOString();
   clearReassignmentTimer(report.id);
   const patrolUnit = patrolUnits.find((unit) => unit.id === body.unitId);
+  if (patrolUnit) {
+    patrolUnit.isAvailable = true;
+    patrolUnit.activeReportId = null;
+    patrolUnit.lastSeenAt = new Date().toISOString();
+    await persistPatrolUnits();
+    broadcastPatrolUnitsUpdated();
+  }
+
+  broadcast("report_updated", report);
+  await persistReports();
+  return { ok: true, report };
+});
+
+app.post("/admin/reports/:id/validate", async (request, reply) => {
+  const params = z.object({ id: z.string() }).parse(request.params);
+
+  const report = reports.find((item) => item.id === params.id);
+  if (!report) {
+    return reply.code(404).send({ error: "Report not found" });
+  }
+
+  report.status = "validated";
+  report.validatedAt = new Date().toISOString();
+  report.rejectedAt = null;
+  clearReassignmentTimer(report.id);
+
+  const patrolUnit = report.assignedUnitId
+    ? patrolUnits.find((unit) => unit.id === report.assignedUnitId)
+    : null;
+  if (patrolUnit) {
+    patrolUnit.isAvailable = true;
+    patrolUnit.activeReportId = null;
+    patrolUnit.lastSeenAt = new Date().toISOString();
+    await persistPatrolUnits();
+    broadcastPatrolUnitsUpdated();
+  }
+
+  broadcast("report_updated", report);
+  await persistReports();
+  return { ok: true, report };
+});
+
+app.post("/admin/reports/:id/reject", async (request, reply) => {
+  const params = z.object({ id: z.string() }).parse(request.params);
+
+  const report = reports.find((item) => item.id === params.id);
+  if (!report) {
+    return reply.code(404).send({ error: "Report not found" });
+  }
+
+  report.status = "rejected";
+  report.rejectedAt = new Date().toISOString();
+  report.validatedAt = null;
+  clearReassignmentTimer(report.id);
+
+  const patrolUnit = report.assignedUnitId
+    ? patrolUnits.find((unit) => unit.id === report.assignedUnitId)
+    : null;
   if (patrolUnit) {
     patrolUnit.isAvailable = true;
     patrolUnit.activeReportId = null;

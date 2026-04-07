@@ -443,6 +443,8 @@ const translateStatus = (status: string) => {
     case "accepted": return "Приет от патрул";
     case "on_site": return "Патрулът е на място";
     case "closed": return "Приключен";
+    case "validated": return "Потвърден от админ";
+    case "rejected": return "Отхвърлен от админ";
     default: return status || "изчакване";
   }
 };
