@@ -687,9 +687,11 @@ export default function App() {
                 ))
               ) : (
                 <Text style={styles.actionMuted}>
-                  {item.assignedUnitId === unitId
-                    ? "Няма следващо действие"
-                    : "Информация: сигналът се обработва от друг патрул"}
+                  {!item.assignedUnitId
+                    ? "Очаква патрул да приеме сигнала"
+                    : item.assignedUnitId === unitId
+                      ? "Няма следващо действие"
+                      : "Информация: сигналът се обработва от друг патрул"}
                 </Text>
               )}
             </View>
