@@ -1129,6 +1129,65 @@ app.get("/monitor/admin", async (_request, reply) => {
       .approve { background: #dcfce7; color: #166534; }
       .reject { background: #fee2e2; color: #991b1b; }
       .status-pill { padding: 4px 8px; border-radius: 999px; background: #f1f5f9; font-size: 0.75rem; }
+      .hint { margin: 8px 0 0; color: #64748b; font-size: 0.92rem; }
+      .photo-btn {
+        border: none;
+        background: transparent;
+        padding: 0;
+        cursor: pointer;
+        display: inline-flex;
+        border-radius: 10px;
+        overflow: hidden;
+        box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.3);
+      }
+      .photo-thumb {
+        width: 72px;
+        height: 72px;
+        object-fit: cover;
+        display: block;
+        background: #e2e8f0;
+      }
+      .photo-modal {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(15, 23, 42, 0.72);
+        padding: 24px;
+      }
+      .photo-modal.open { display: flex; }
+      .photo-modal-card {
+        width: min(900px, 96vw);
+        max-height: 92vh;
+        overflow: auto;
+        background: #fff;
+        border-radius: 18px;
+        padding: 18px;
+        display: grid;
+        gap: 12px;
+      }
+      .photo-modal-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+      }
+      .photo-modal-head h2 { margin: 0; font-size: 1.1rem; }
+      .photo-modal img {
+        width: 100%;
+        max-height: 72vh;
+        object-fit: contain;
+        border-radius: 14px;
+        background: #e2e8f0;
+      }
+      .meta-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 10px;
+        font-size: 0.92rem;
+      }
+      .meta-grid strong { display: block; color: #475569; font-size: 0.8rem; margin-bottom: 4px; }
     </style>
   </head>
   <body>
@@ -1140,11 +1199,13 @@ app.get("/monitor/admin", async (_request, reply) => {
       </nav>
       <section class="panel">
         <h1>Админ панел</h1>
+        <p class="hint">Всеки нов сигнал се подава директно към активен patrol app за приемане. Ако няма приемане, администраторът може да пренасочи сигнала ръчно след преглед на снимката.</p>
         <div class="filters">
           <label>
             Статус
             <select id="statusFilter">
               <option value="">Всички</option>
+              <option value="pending">pending</option>
               <option value="submitted">submitted</option>
               <option value="assigned">assigned</option>
               <option value="accepted">accepted</option>
@@ -1162,6 +1223,7 @@ app.get("/monitor/admin", async (_request, reply) => {
           <thead>
             <tr>
               <th>ID</th>
+              <th>Снимка</th>
               <th>Телефон</th>
               <th>Статус</th>
               <th>Получен</th>
@@ -1174,11 +1236,35 @@ app.get("/monitor/admin", async (_request, reply) => {
         </table>
       </section>
     </main>
+    <div id="photoModal" class="photo-modal" aria-hidden="true">
+      <div class="photo-modal-card">
+        <div class="photo-modal-head">
+          <h2 id="photoModalTitle">Снимка на сигнал</h2>
+          <button id="closePhotoModal">Затвори</button>
+        </div>
+        <img id="photoModalImage" alt="Снимка на сигнал" />
+        <div id="photoMeta" class="meta-grid"></div>
+      </div>
+    </div>
     <script>
       const bodyEl = document.getElementById('reportsBody');
       const filterEl = document.getElementById('statusFilter');
       const refreshBtn = document.getElementById('refreshBtn');
+      const photoModalEl = document.getElementById('photoModal');
+      const closePhotoModalEl = document.getElementById('closePhotoModal');
+      const photoModalImageEl = document.getElementById('photoModalImage');
+      const photoModalTitleEl = document.getElementById('photoModalTitle');
+      const photoMetaEl = document.getElementById('photoMeta');
       let unitsCache = [];
+
+      const escapeHtml = (value) => String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+      const escapeAttribute = (value) => escapeHtml(value);
 
       const loadUnits = async () => {
         try {
@@ -1216,6 +1302,9 @@ app.get("/monitor/admin", async (_request, reply) => {
         bodyEl.innerHTML = payload.items.map((report) => {
           const displayStatus = toDisplayStatus(report);
           const statusPill = '<span class="status-pill">' + displayStatus + '</span>';
+          const photoButton = report.photoUrl
+            ? '<button class="photo-btn" type="button" data-action="preview-photo" data-id="' + report.id + '" data-photo-url="' + escapeAttribute(report.photoUrl) + '" data-phone="' + escapeAttribute(report.phone) + '" data-status="' + escapeAttribute(displayStatus) + '" data-received="' + escapeAttribute(new Date(report.receivedAtServer).toLocaleString('bg-BG')) + '" data-patrol="' + escapeAttribute(report.assignedUnitId || '-') + '"><img class="photo-thumb" src="' + escapeAttribute(report.photoUrl) + '" alt="Снимка за сигнал ' + escapeAttribute(report.id.slice(0, 8)) + '" /></button>'
+            : '-';
           const actions = report.status === 'validated' || report.status === 'rejected'
             ? ''
             : '<button class="action-btn approve" data-id="' + report.id + '" data-action="validate">Потвърди</button>' +
@@ -1230,6 +1319,7 @@ app.get("/monitor/admin", async (_request, reply) => {
           return (
             '<tr>' +
             '<td>' + report.id.slice(0, 8) + '</td>' +
+            '<td>' + photoButton + '</td>' +
             '<td>' + report.phone + '</td>' +
             '<td>' + statusPill + '</td>' +
             '<td>' + new Date(report.receivedAtServer).toLocaleString('bg-BG') + '</td>' +
@@ -1246,6 +1336,19 @@ app.get("/monitor/admin", async (_request, reply) => {
         if (!button) return;
         const reportId = button.dataset.id;
         const action = button.dataset.action;
+        if (action === 'preview-photo') {
+          photoModalTitleEl.textContent = 'Сигнал ' + reportId.slice(0, 8);
+          photoModalImageEl.src = button.dataset.photoUrl || '';
+          photoMetaEl.innerHTML = [
+            ['Телефон', button.dataset.phone || '-'],
+            ['Статус', button.dataset.status || '-'],
+            ['Получен', button.dataset.received || '-'],
+            ['Патрул', button.dataset.patrol || '-']
+          ].map(([label, value]) => '<div><strong>' + label + '</strong>' + escapeHtml(value) + '</div>').join('');
+          photoModalEl.classList.add('open');
+          photoModalEl.setAttribute('aria-hidden', 'false');
+          return;
+        }
         if (action === 'assign') {
           const selector = bodyEl.querySelector('select[data-role="unit"][data-id="' + reportId + '"]');
           const unitId = selector ? selector.value : '';
@@ -1259,6 +1362,25 @@ app.get("/monitor/admin", async (_request, reply) => {
           await fetch('/admin/reports/' + reportId + '/' + action, { method: 'POST' });
         }
         await load();
+      });
+
+      const closePhotoModal = () => {
+        photoModalEl.classList.remove('open');
+        photoModalEl.setAttribute('aria-hidden', 'true');
+        photoModalImageEl.src = '';
+        photoMetaEl.innerHTML = '';
+      };
+
+      closePhotoModalEl.addEventListener('click', closePhotoModal);
+      photoModalEl.addEventListener('click', (event) => {
+        if (event.target === photoModalEl) {
+          closePhotoModal();
+        }
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && photoModalEl.classList.contains('open')) {
+          closePhotoModal();
+        }
       });
 
       refreshBtn.addEventListener('click', load);
@@ -1281,7 +1403,15 @@ app.get("/monitor/admin/reports", async (request) => {
     .parse(request.query ?? {});
 
   const items = reports
-    .filter((report) => (query.status ? report.status === query.status : true))
+    .filter((report) => {
+      if (!query.status) {
+        return true;
+      }
+      if (query.status === "pending") {
+        return report.status === "submitted" && !report.assignedUnitId;
+      }
+      return report.status === query.status;
+    })
     .sort((left, right) => new Date(right.receivedAtServer).getTime() - new Date(left.receivedAtServer).getTime())
     .slice(0, query.limit);
 
@@ -1325,6 +1455,8 @@ app.post("/admin/reports/:id/assign", async (request, reply) => {
     unitLabel: targetUnit.label
   });
   broadcast("report_updated", report);
+  clearReassignmentTimer(report.id);
+  scheduleReassignment(report.id);
   await persistReports();
 
   void sendPushToUnit(
@@ -1451,6 +1583,10 @@ app.post("/patrol/register", async (request, reply) => {
   }
 
   await persistPatrolUnits();
+  reportStateChanged = (await assignPendingReports()) || reportStateChanged;
+  if (reportStateChanged) {
+    await persistReports();
+  }
   broadcastPatrolUnitsUpdated();
   return {
     ok: true,
@@ -1523,6 +1659,10 @@ app.post("/patrol/units/:unitId/push-token", async (request, reply) => {
   }
 
   await persistPatrolPushTokens();
+  reportStateChanged = (await assignPendingReports()) || reportStateChanged;
+  if (reportStateChanged) {
+    await persistReports();
+  }
   broadcastPatrolUnitsUpdated();
 
   return { ok: true, count: unitTokens.size };
@@ -1614,6 +1754,30 @@ app.post("/reports", async (request, reply) => {
   reports.push(report);
   await persistReports();
   broadcast("report_created", report);
+
+  const assignedUnit = assignNearestPatrol(report);
+  if (assignedUnit) {
+    broadcast("report_assigned", {
+      reportId: report.id,
+      unitId: assignedUnit.id,
+      unitLabel: assignedUnit.label
+    });
+    broadcast("report_updated", report);
+    await persistReports();
+    void sendPushToUnit(
+      assignedUnit.id,
+      "Нов сигнал",
+      `Тел: ${report.phone} | ${report.lat.toFixed(4)}, ${report.lng.toFixed(4)}`,
+      {
+        reportId: report.id,
+        event: "report_assigned",
+        phone: report.phone,
+        lat: String(report.lat),
+        lng: String(report.lng)
+      }
+    );
+    scheduleReassignment(report.id);
+  }
 
   return reply.code(201).send(report);
 });
