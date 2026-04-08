@@ -31,6 +31,9 @@ type ReportRecord = {
   closedAt: string | null;
   validatedAt: string | null;
   rejectedAt: string | null;
+  declinedByUnitIds: string[];
+  lastDeclinedUnitId: string | null;
+  lastDeclinedAt: string | null;
 };
 
 type PatrolUnit = {
@@ -135,6 +138,8 @@ const isReportVerified = (report: ReportRecord) =>
   Boolean(report.validatedAt || report.arrivedAt || report.closedAt);
 const isReportAccepted = (report: ReportRecord) =>
   Boolean(report.acceptedAt || report.arrivedAt || report.closedAt);
+const isReportActiveForPatrol = (report: ReportRecord) =>
+  !["closed", "validated", "rejected"].includes(report.status);
 
 const toCitizenHistoryEntry = (report: ReportRecord): CitizenHistoryEntry => ({
   id: report.id,
@@ -480,7 +485,18 @@ const broadcastPatrolUnitsUpdated = () => {
 const loadReports = async () => {
   try {
     const raw = await fs.readFile(REPORT_STORE_PATH, "utf-8");
-    const parsed = JSON.parse(raw) as ReportRecord[];
+    const parsed = (JSON.parse(raw) as Array<Partial<ReportRecord>>).map((report) => ({
+      ...report,
+      assignmentAttempts: Array.isArray(report.assignmentAttempts) ? report.assignmentAttempts : [],
+      declinedByUnitIds: Array.isArray(report.declinedByUnitIds) ? report.declinedByUnitIds : [],
+      acceptedAt: report.acceptedAt ?? null,
+      arrivedAt: report.arrivedAt ?? null,
+      closedAt: report.closedAt ?? null,
+      validatedAt: report.validatedAt ?? null,
+      rejectedAt: report.rejectedAt ?? null,
+      lastDeclinedUnitId: report.lastDeclinedUnitId ?? null,
+      lastDeclinedAt: report.lastDeclinedAt ?? null
+    })) as ReportRecord[];
     if (!Array.isArray(parsed)) {
       return;
     }
@@ -1129,6 +1145,8 @@ app.get("/monitor/admin", async (_request, reply) => {
       .approve { background: #dcfce7; color: #166534; }
       .reject { background: #fee2e2; color: #991b1b; }
       .status-pill { padding: 4px 8px; border-radius: 999px; background: #f1f5f9; font-size: 0.75rem; }
+      .status-wrap { display: grid; gap: 4px; }
+      .status-meta { font-size: 0.78rem; color: #64748b; line-height: 1.35; }
       .hint { margin: 8px 0 0; color: #64748b; font-size: 0.92rem; }
       .photo-btn {
         border: none;
@@ -1292,6 +1310,18 @@ app.get("/monitor/admin", async (_request, reply) => {
         return report.status;
       };
 
+      const buildStatusCell = (report) => {
+        const displayStatus = toDisplayStatus(report);
+        const statusPill = '<span class="status-pill">' + displayStatus + '</span>';
+        if (!report.lastDeclinedAt || !report.lastDeclinedUnitId) {
+          return '<div class="status-wrap">' + statusPill + '</div>';
+        }
+        return '<div class="status-wrap">' +
+          statusPill +
+          '<span class="status-meta">Последен отказ: ' + escapeHtml(report.lastDeclinedUnitId) + '<br />' + escapeHtml(new Date(report.lastDeclinedAt).toLocaleString('bg-BG')) + '</span>' +
+          '</div>';
+      };
+
       const load = async () => {
         const status = filterEl.value;
         const url = status ? '/monitor/admin/reports?status=' + status : '/monitor/admin/reports';
@@ -1301,7 +1331,7 @@ app.get("/monitor/admin", async (_request, reply) => {
 
         bodyEl.innerHTML = payload.items.map((report) => {
           const displayStatus = toDisplayStatus(report);
-          const statusPill = '<span class="status-pill">' + displayStatus + '</span>';
+          const statusCell = buildStatusCell(report);
           const photoButton = report.photoUrl
             ? '<button class="photo-btn" type="button" data-action="preview-photo" data-id="' + report.id + '" data-photo-url="' + escapeAttribute(report.photoUrl) + '" data-phone="' + escapeAttribute(report.phone) + '" data-status="' + escapeAttribute(displayStatus) + '" data-received="' + escapeAttribute(new Date(report.receivedAtServer).toLocaleString('bg-BG')) + '" data-patrol="' + escapeAttribute(report.assignedUnitId || '-') + '"><img class="photo-thumb" src="' + escapeAttribute(report.photoUrl) + '" alt="Снимка за сигнал ' + escapeAttribute(report.id.slice(0, 8)) + '" /></button>'
             : '-';
@@ -1321,7 +1351,7 @@ app.get("/monitor/admin", async (_request, reply) => {
             '<td>' + report.id.slice(0, 8) + '</td>' +
             '<td>' + photoButton + '</td>' +
             '<td>' + report.phone + '</td>' +
-            '<td>' + statusPill + '</td>' +
+            '<td>' + statusCell + '</td>' +
             '<td>' + new Date(report.receivedAtServer).toLocaleString('bg-BG') + '</td>' +
             '<td>' + (report.assignedUnitId || '-') + '</td>' +
             '<td>' + assignControls + '</td>' +
@@ -1442,7 +1472,9 @@ app.post("/admin/reports/:id/assign", async (request, reply) => {
 
   report.assignedUnitId = targetUnit.id;
   report.status = "assigned";
-  report.assignmentAttempts.push(targetUnit.id);
+  if (!report.assignmentAttempts.includes(targetUnit.id)) {
+    report.assignmentAttempts.push(targetUnit.id);
+  }
 
   targetUnit.isAvailable = false;
   targetUnit.activeReportId = report.id;
@@ -1695,13 +1727,26 @@ app.get("/patrol/incidents/live", async (request) => {
     .parse(request.query ?? {});
 
   return reports
-    .filter((report) => !["validated", "rejected"].includes(report.status))
-    .filter((report) => {
-      if (!query.unitId) return true;
-      return report.assignedUnitId === query.unitId;
+    .filter(isReportActiveForPatrol)
+    .sort((left, right) => {
+      if (!query.unitId) {
+        return new Date(right.receivedAtServer).getTime() - new Date(left.receivedAtServer).getTime();
+      }
+
+      const priority = (report: ReportRecord) => {
+        if (report.assignedUnitId === query.unitId) return 0;
+        if (!report.assignedUnitId && report.status === "submitted") return 1;
+        return 2;
+      };
+
+      const delta = priority(left) - priority(right);
+      if (delta !== 0) {
+        return delta;
+      }
+
+      return new Date(right.receivedAtServer).getTime() - new Date(left.receivedAtServer).getTime();
     })
-    .slice(-20)
-    .reverse();
+    .slice(0, 30);
 });
 
 app.get("/monitor/incidents/active", async () => {
@@ -1748,7 +1793,10 @@ app.post("/reports", async (request, reply) => {
     arrivedAt: null,
     closedAt: null,
     validatedAt: null,
-    rejectedAt: null
+    rejectedAt: null,
+    declinedByUnitIds: [],
+    lastDeclinedUnitId: null,
+    lastDeclinedAt: null
   };
 
   reports.push(report);
@@ -1790,13 +1838,77 @@ app.post("/patrol/incidents/:id/accept", async (request, reply) => {
   if (!report) {
     return reply.code(404).send({ error: "Report not found" });
   }
-  if (report.assignedUnitId !== body.unitId) {
+  if (report.assignedUnitId && report.assignedUnitId !== body.unitId) {
     return reply.code(409).send({ error: "Report is assigned to another unit" });
+  }
+
+  const patrolUnit = patrolUnits.find((unit) => unit.id === body.unitId);
+  if (!patrolUnit) {
+    return reply.code(404).send({ error: "Patrol unit not found" });
+  }
+  if (report.status === "submitted" && report.assignmentAttempts.includes(body.unitId)) {
+    return reply.code(409).send({ error: "Report was already declined by this patrol" });
+  }
+  if (patrolUnit.activeReportId && patrolUnit.activeReportId !== report.id) {
+    return reply.code(409).send({ error: "Patrol already has an active report" });
+  }
+
+  if (!report.assignedUnitId) {
+    report.assignedUnitId = body.unitId;
+    if (!report.assignmentAttempts.includes(body.unitId)) {
+      report.assignmentAttempts.push(body.unitId);
+    }
+    patrolUnit.isAvailable = false;
+    patrolUnit.activeReportId = report.id;
+    patrolUnit.lastSeenAt = new Date().toISOString();
+    await persistPatrolUnits();
+    broadcastPatrolUnitsUpdated();
   }
 
   report.status = "accepted";
   report.acceptedAt = new Date().toISOString();
   clearReassignmentTimer(report.id);
+  broadcast("report_updated", report);
+  await persistReports();
+  return { ok: true, report };
+});
+
+app.post("/patrol/incidents/:id/decline", async (request, reply) => {
+  const params = z.object({ id: z.string() }).parse(request.params);
+  const body = z.object({ unitId: z.string() }).parse(request.body);
+
+  const report = reports.find((item) => item.id === params.id);
+  if (!report) {
+    return reply.code(404).send({ error: "Report not found" });
+  }
+  if (report.assignedUnitId !== body.unitId || report.status !== "assigned") {
+    return reply.code(409).send({ error: "Report is not awaiting acceptance by this patrol" });
+  }
+
+  const patrolUnit = patrolUnits.find((unit) => unit.id === body.unitId);
+  if (patrolUnit) {
+    patrolUnit.isAvailable = true;
+    patrolUnit.activeReportId = null;
+    patrolUnit.lastSeenAt = new Date().toISOString();
+    await persistPatrolUnits();
+    broadcastPatrolUnitsUpdated();
+  }
+
+  clearReassignmentTimer(report.id);
+  report.assignedUnitId = null;
+  report.status = "submitted";
+  report.acceptedAt = null;
+  report.lastDeclinedUnitId = body.unitId;
+  report.lastDeclinedAt = new Date().toISOString();
+  if (!report.declinedByUnitIds.includes(body.unitId)) {
+    report.declinedByUnitIds.push(body.unitId);
+  }
+
+  broadcast("report_declined", {
+    reportId: report.id,
+    unitId: body.unitId,
+    declinedAt: report.lastDeclinedAt
+  });
   broadcast("report_updated", report);
   await persistReports();
   return { ok: true, report };

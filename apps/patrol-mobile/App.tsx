@@ -31,9 +31,12 @@ type ReportRecord = {
   receivedAtServer: string;
   status: "submitted" | "assigned" | "accepted" | "on_site" | "closed" | "validated" | "rejected";
   assignedUnitId: string | null;
+  assignmentAttempts: string[];
   acceptedAt: string | null;
   arrivedAt: string | null;
   closedAt: string | null;
+  lastDeclinedUnitId: string | null;
+  lastDeclinedAt: string | null;
 };
 
 type ShiftLog = {
@@ -59,6 +62,9 @@ const createEmptyShiftLog = (): ShiftLog => ({
   arrivedIds: [],
   closedIds: []
 });
+
+const isReportVisible = (report: ReportRecord) =>
+  !["closed", "validated", "rejected"].includes(report.status);
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -187,7 +193,7 @@ export default function App() {
           if (!report) return;
 
           setReports((prev) => {
-            if (!unitId || report.assignedUnitId !== unitId) {
+            if (!isReportVisible(report)) {
               return prev;
             }
             if (prev.some((item) => item.id === report.id)) return prev;
@@ -219,9 +225,9 @@ export default function App() {
 
           setReports((prev) => {
             const existingIndex = prev.findIndex((item) => item.id === report.id);
-            const belongsToUnit = Boolean(unitId) && report.assignedUnitId === unitId;
+            const shouldKeepVisible = isReportVisible(report);
 
-            if (!belongsToUnit) {
+            if (!shouldKeepVisible) {
               if (existingIndex >= 0) {
                 return prev.filter((item) => item.id !== report.id);
               }
@@ -429,12 +435,14 @@ export default function App() {
     };
   }, [unitId]);
 
-  const updateStatus = async (reportId: string, action: "accept" | "arrived" | "close") => {
+  const updateStatus = async (reportId: string, action: "accept" | "decline" | "arrived" | "close") => {
     setPendingActionReportId(reportId);
     try {
       const endpoint =
         action === "accept"
           ? "accept"
+          : action === "decline"
+            ? "decline"
           : action === "arrived"
             ? "arrived"
             : "close";
@@ -474,12 +482,18 @@ export default function App() {
           return { ...prev, arrivedIds: [...prev.arrivedIds, reportId] };
         }
 
+        if (action === "decline") {
+          return prev;
+        }
+
         if (prev.closedIds.includes(reportId)) return prev;
         return { ...prev, closedIds: [...prev.closedIds, reportId] };
       });
       setDispatchNotice(
         action === "accept"
           ? `Сигналът е приет: ${reportId.slice(0, 8)}`
+          : action === "decline"
+            ? `Сигналът е отказан: ${reportId.slice(0, 8)}`
           : action === "arrived"
             ? `Маркиран на място: ${reportId.slice(0, 8)}`
             : `Сигналът е приключен: ${reportId.slice(0, 8)}`
@@ -490,12 +504,26 @@ export default function App() {
   };
 
   const getAvailableActions = (report: ReportRecord) => {
+    if (!unitId) {
+      return [] as const;
+    }
+
+    if (!report.assignedUnitId && report.status === "submitted") {
+      if (report.assignmentAttempts.includes(unitId)) {
+        return [] as const;
+      }
+      return [{ key: "accept", label: "Поемам" }] as const;
+    }
+
     if (report.assignedUnitId !== unitId) {
       return [] as const;
     }
 
     if (report.status === "assigned") {
-      return [{ key: "accept", label: "Приемам" }] as const;
+      return [
+        { key: "accept", label: "Приемам" },
+        { key: "decline", label: "Отказвам" }
+      ] as const;
     }
 
     if (report.status === "accepted") {
@@ -510,6 +538,10 @@ export default function App() {
   };
 
   const getColleagueStatusLabel = (report: ReportRecord) => {
+    if (!report.assignedUnitId && report.lastDeclinedAt && report.lastDeclinedUnitId) {
+      return `Отказан от ${report.lastDeclinedUnitId}, чака нов патрул`;
+    }
+
     if (!report.assignedUnitId || report.assignedUnitId === unitId) {
       return null;
     }
@@ -678,7 +710,11 @@ export default function App() {
                 getAvailableActions(item).map((action) => (
                   <Pressable
                     key={action.key}
-                    style={[styles.actionButton, pendingActionReportId === item.id && styles.actionButtonDisabled]}
+                    style={[
+                      styles.actionButton,
+                      action.key === "decline" && styles.actionButtonDanger,
+                      pendingActionReportId === item.id && styles.actionButtonDisabled
+                    ]}
                     disabled={pendingActionReportId === item.id}
                     onPress={() => void updateStatus(item.id, action.key)}
                   >
@@ -688,7 +724,9 @@ export default function App() {
               ) : (
                 <Text style={styles.actionMuted}>
                   {!item.assignedUnitId
-                    ? "Очаква патрул да приеме сигнала"
+                    ? item.assignmentAttempts.includes(unitId)
+                      ? "Отказан от теб. Изчаква друг патрул или админ."
+                      : "Очаква патрул да поеме сигнала"
                     : item.assignedUnitId === unitId
                       ? "Няма следващо действие"
                       : "Информация: сигналът се обработва от друг патрул"}
@@ -864,6 +902,9 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 10
+  },
+  actionButtonDanger: {
+    backgroundColor: "#b91c1c"
   },
   actionButtonDisabled: {
     opacity: 0.7
